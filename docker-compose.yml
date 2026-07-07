@@ -10,5 +10,41 @@ services:
       MONGO_INITDB_DATABASE: runner_ai_v1
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    container_name: runner_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - runner_redis_data:/data
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    container_name: runner_qdrant
+    ports:
+      - "6333:6333"   # REST
+      - "6334:6334"   # gRPC
+    volumes:
+      - runner_qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: runner_minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - runner_minio_data:/data
+    restart: unless-stopped
+
 volumes:
   runner_mongo_data:
+  runner_redis_data:
+  runner_qdrant_data:
+  runner_minio_data:

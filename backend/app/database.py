@@ -8,6 +8,8 @@ db = client[settings.db_name]
 threads_collection = db["threads"]
 messages_collection = db["messages"]
 thread_summaries_collection = db["thread_summaries"]
+documents_collection = db["documents"]
+jobs_collection = db["jobs"]
 
 
 async def ensure_indexes() -> None:
@@ -33,3 +35,10 @@ async def ensure_indexes() -> None:
         unique=True,
         name="uniq_user_thread_summary",
     )
+
+    # Document listing per user, newest first.
+    await documents_collection.create_index([("user_id", 1), ("created_at", -1)])
+
+    # Job lookups: by document, and a worker-friendly status/created ordering.
+    await jobs_collection.create_index([("document_id", 1)])
+    await jobs_collection.create_index([("status", 1), ("created_at", 1)])
