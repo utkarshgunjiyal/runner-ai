@@ -39,20 +39,6 @@ async def get_thread(user_id: str, thread_id: str) -> dict:
     return thread
 
 
-async def update_thread_activity(thread_id: str, last_message_seq: int) -> None:
-    await threads_collection.update_one(
-        {"_id": ObjectId(thread_id)},
-        {
-            "$set": {
-                "updated_at": datetime.utcnow(),
-                "last_message_seq": last_message_seq,
-            },
-            "$inc": {
-                "message_count": 1,
-            },
-        },
-    )
-
 async def allocate_next_sequence(user_id: str, thread_id: str) -> int:
     updated_thread = await threads_collection.find_one_and_update(
         {
