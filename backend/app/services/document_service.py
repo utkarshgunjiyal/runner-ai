@@ -42,6 +42,17 @@ async def get_document(document_id: str, user_id: str | None = None) -> dict | N
     return await documents_collection.find_one(query)
 
 
+async def get_latest_completed_document(user_id: str) -> dict | None:
+    """Most recently created COMPLETED document for a user.
+
+    Used as the retrieval target when a request doesn't name a document_id.
+    """
+    return await documents_collection.find_one(
+        {"user_id": user_id, "status": DocumentStatus.COMPLETED.value},
+        sort=[("created_at", -1)],
+    )
+
+
 async def update_document(document_id: str, fields: dict) -> None:
     fields = {**fields, "updated_at": datetime.utcnow()}
     await documents_collection.update_one(

@@ -23,7 +23,11 @@ def generate_thread_title(question: str) -> str:
     return question[:60]
 
 
-async def handle_chat(question: str, thread_id: str | None) -> dict:
+async def handle_chat(
+    question: str,
+    thread_id: str | None,
+    document_id: str | None = None,
+) -> dict:
     user_id = DEV_USER_ID
 
     if thread_id:
@@ -68,6 +72,7 @@ async def handle_chat(question: str, thread_id: str | None) -> dict:
     question=question,
     request_plan=request_plan,
     context_policy=context_policy,
+    document_id=document_id,
 )
 
     context = compose_context(

@@ -10,4 +10,5 @@ async def ask(request: ChatRequest):
     return await handle_chat(
         question=request.question,
         thread_id=request.thread_id,
+        document_id=request.document_id,
     )

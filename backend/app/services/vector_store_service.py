@@ -1,7 +1,4 @@
-"""Vector store (Qdrant) — stores chunk embeddings for retrieval (Phase 2).
-
-Phase 1 only writes vectors; retrieval is wired up in Phase 2.
-"""
+"""Vector store (Qdrant) — chunk embeddings: indexing (Phase 1) + search (Phase 2)."""
 
 import uuid
 
@@ -77,3 +74,89 @@ async def upsert_chunks(
     if points:
         await client.upsert(collection_name=settings.qdrant_collection, points=points)
     return len(points)
+
+
+# ---------------------------------------------------------------------------
+# Retrieval (Phase 2)
+# ---------------------------------------------------------------------------
+
+def _build_filter(
+    user_id: str,
+    document_id: str | None = None,
+    page: int | None = None,
+) -> models.Filter:
+    must = [
+        models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
+    ]
+    if document_id is not None:
+        must.append(
+            models.FieldCondition(
+                key="document_id", match=models.MatchValue(value=document_id)
+            )
+        )
+    if page is not None:
+        must.append(
+            models.FieldCondition(key="page", match=models.MatchValue(value=page))
+        )
+    return models.Filter(must=must)
+
+
+def _to_hit(payload: dict, score: float | None) -> dict:
+    return {
+        "text": payload.get("text", ""),
+        "page": payload.get("page"),
+        "document_id": payload.get("document_id"),
+        "chunk_index": payload.get("chunk_index"),
+        "score": score,
+    }
+
+
+async def search(
+    query_vector: list[float],
+    user_id: str,
+    top_k: int,
+    document_id: str | None = None,
+    page: int | None = None,
+) -> list[dict]:
+    """Semantic search, filtered by user (and optionally document/page).
+
+    Returns hits with text, page, document_id, chunk_index, score — ordered by
+    descending similarity. Safe on an empty/missing collection (returns []).
+    """
+    if top_k <= 0:
+        return []
+    client = get_client()
+    await ensure_collection()
+
+    response = await client.query_points(
+        collection_name=settings.qdrant_collection,
+        query=query_vector,
+        query_filter=_build_filter(user_id, document_id, page),
+        limit=top_k,
+        with_payload=True,
+    )
+    return [_to_hit(point.payload, point.score) for point in response.points]
+
+
+async def list_page_chunks(
+    user_id: str,
+    document_id: str | None,
+    page: int,
+    limit: int = 50,
+) -> list[dict]:
+    """Deterministically fetch all chunks on a page, ordered by chunk_index.
+
+    Used for page-scoped retrieval (no query vector needed).
+    """
+    client = get_client()
+    await ensure_collection()
+
+    points, _ = await client.scroll(
+        collection_name=settings.qdrant_collection,
+        scroll_filter=_build_filter(user_id, document_id, page),
+        limit=limit,
+        with_payload=True,
+    )
+    hits = [_to_hit(point.payload, None) for point in points]
+    hits.sort(key=lambda hit: (hit["chunk_index"] is None, hit["chunk_index"]))
+    return hits
