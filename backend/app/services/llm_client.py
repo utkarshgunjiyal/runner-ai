@@ -10,6 +10,8 @@ Public surface:
 """
 
 import asyncio
+import json
+from typing import AsyncIterator
 
 import httpx
 
@@ -153,3 +155,160 @@ async def complete(
             else:
                 logger.error("llm.failed", extra={"provider": provider, "error": str(exc)})
                 raise LLMError(f"LLM failed after {attempts} attempt(s): {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Streaming (Phase 5)
+# ---------------------------------------------------------------------------
+
+async def _raise_for_stream_status(response: httpx.Response) -> None:
+    if response.status_code in _RETRYABLE_STATUS:
+        body = (await response.aread()).decode(errors="replace")
+        raise _RetryableError(f"status {response.status_code}: {body[:200]}")
+    if response.status_code >= 400:
+        body = (await response.aread()).decode(errors="replace")
+        raise LLMError(f"stream failed [{response.status_code}]: {body[:300]}")
+
+
+def _parse_anthropic_line(line: str) -> str | None:
+    if not line or not line.startswith("data:"):
+        return None
+    payload = line[len("data:"):].strip()
+    if not payload:
+        return None
+    try:
+        obj = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if obj.get("type") == "content_block_delta":
+        delta = obj.get("delta", {})
+        if delta.get("type") == "text_delta":
+            return delta.get("text", "")
+    return None
+
+
+def _parse_openai_line(line: str) -> str | None:
+    if not line or not line.startswith("data:"):
+        return None
+    payload = line[len("data:"):].strip()
+    if not payload or payload == "[DONE]":
+        return None
+    try:
+        obj = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    choices = obj.get("choices", [])
+    if choices:
+        return choices[0].get("delta", {}).get("content")
+    return None
+
+
+async def _stream_http(url, headers, payload, parse_line) -> AsyncIterator[str]:
+    try:
+        async with httpx.AsyncClient(timeout=settings.llm_timeout_seconds) as client:
+            async with client.stream("POST", url, headers=headers, json=payload) as response:
+                await _raise_for_stream_status(response)
+                async for line in response.aiter_lines():
+                    text = parse_line(line)
+                    if text:
+                        yield text
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        raise _RetryableError(f"transport error: {exc}") from exc
+
+
+async def _stream_anthropic(system, prompt, max_tokens, temperature) -> AsyncIterator[str]:
+    headers = {
+        "x-api-key": settings.anthropic_api_key,
+        "anthropic-version": _ANTHROPIC_VERSION,
+        "content-type": "application/json",
+    }
+    payload = {
+        "model": settings.llm_model,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "system": system,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": True,
+    }
+    async for chunk in _stream_http(_ANTHROPIC_URL, headers, payload, _parse_anthropic_line):
+        yield chunk
+
+
+async def _stream_openrouter(system, prompt, max_tokens, temperature) -> AsyncIterator[str]:
+    headers = {
+        "Authorization": f"Bearer {settings.openrouter_api_key}",
+        "content-type": "application/json",
+    }
+    payload = {
+        "model": settings.llm_model,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": True,
+    }
+    async for chunk in _stream_http(_OPENROUTER_URL, headers, payload, _parse_openai_line):
+        yield chunk
+
+
+async def _stream_stub(system, prompt, max_tokens, temperature) -> AsyncIterator[str]:
+    text = f"[stub-llm] {prompt[:400]}".strip()
+    for i in range(0, len(text), 12):
+        yield text[i : i + 12]
+
+
+_STREAM_PROVIDERS = {
+    "anthropic": _stream_anthropic,
+    "openrouter": _stream_openrouter,
+    "stub": _stream_stub,
+}
+
+
+async def stream(
+    system: str,
+    prompt: str,
+    *,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+) -> AsyncIterator[str]:
+    """Yield answer text incrementally.
+
+    Retries transient failures only *before the first token* is emitted; once
+    streaming has begun a mid-stream failure surfaces as LLMError (we can't
+    safely restart a partially-consumed stream).
+    """
+    provider = _resolve_provider()
+    fn = _STREAM_PROVIDERS.get(provider)
+    if fn is None:
+        raise LLMError(f"unknown LLM provider: {provider}")
+    if provider == "anthropic" and not settings.anthropic_api_key:
+        raise LLMError("ANTHROPIC_API_KEY is not set")
+    if provider == "openrouter" and not settings.openrouter_api_key:
+        raise LLMError("OPENROUTER_API_KEY is not set")
+
+    max_tokens = max_tokens or settings.llm_max_tokens
+    temperature = settings.llm_temperature if temperature is None else temperature
+
+    attempts = max(1, settings.llm_max_retries + 1)
+    delay = 0.5
+    for attempt in range(1, attempts + 1):
+        started = False
+        try:
+            async for chunk in fn(system, prompt, max_tokens, temperature):
+                started = True
+                yield chunk
+            logger.info("llm.stream_completed", extra={"provider": provider, "attempt": attempt})
+            return
+        except _RetryableError as exc:
+            if started:
+                logger.error("llm.stream_interrupted", extra={"provider": provider, "error": str(exc)})
+                raise LLMError(f"stream interrupted: {exc}") from exc
+            if attempt < attempts:
+                logger.warning("llm.stream_retry", extra={"provider": provider, "attempt": attempt})
+                await asyncio.sleep(delay)
+                delay *= 2
+            else:
+                logger.error("llm.stream_failed", extra={"provider": provider, "error": str(exc)})
+                raise LLMError(f"stream failed after {attempts} attempt(s): {exc}") from exc

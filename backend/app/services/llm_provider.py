@@ -1,9 +1,11 @@
 """Answer generation.
 
-Preserves the ``generate_answer(context) -> str`` interface. Builds a grounded
-prompt from the composed context (system prompt + priority-ordered evidence +
-question) and delegates to the provider-agnostic llm_client.
+Preserves the ``generate_answer(context) -> str`` interface and adds a
+streaming variant. Both build the same grounded prompt (system prompt +
+priority-ordered evidence + question) via ``build_prompt``.
 """
+
+from typing import AsyncIterator
 
 from app.services import llm_client
 
@@ -14,7 +16,7 @@ _DEFAULT_SYSTEM = (
 )
 
 
-async def generate_answer(context: dict) -> str:
+def build_prompt(context: dict) -> tuple[str, str]:
     system = context.get("system_prompt") or _DEFAULT_SYSTEM
     question = context["question"]
     evidence = context.get("evidence", [])
@@ -31,4 +33,15 @@ async def generate_answer(context: dict) -> str:
     else:
         prompt = question
 
+    return system, prompt
+
+
+async def generate_answer(context: dict) -> str:
+    system, prompt = build_prompt(context)
     return await llm_client.complete(system, prompt)
+
+
+async def stream_answer(context: dict) -> AsyncIterator[str]:
+    system, prompt = build_prompt(context)
+    async for chunk in llm_client.stream(system, prompt):
+        yield chunk
