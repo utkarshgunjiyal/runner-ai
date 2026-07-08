@@ -26,10 +26,24 @@ async def _process(job_id: str) -> None:
         logger.error("worker.job_error", extra={"job_id": job_id})
 
 
+async def _init_infra(retries: int = 30, delay: float = 2.0) -> None:
+    """Ensure the MinIO bucket + Qdrant collection exist, tolerating infra that
+    is still coming up (common on a fresh `docker compose up`)."""
+    for attempt in range(1, retries + 1):
+        try:
+            await storage_service.ensure_bucket()
+            await vector_store_service.ensure_collection()
+            return
+        except Exception:  # noqa: BLE001 - retry until infra is reachable
+            if attempt == retries:
+                raise
+            logger.warning("worker.infra_wait", extra={"attempt": attempt})
+            await asyncio.sleep(delay)
+
+
 async def run_worker(stop_event: asyncio.Event | None = None) -> None:
     logger.info("worker.starting", extra={"queue": settings.job_queue_name})
-    await storage_service.ensure_bucket()
-    await vector_store_service.ensure_collection()
+    await _init_infra()
     logger.info("worker.ready")
 
     stop_event = stop_event or asyncio.Event()

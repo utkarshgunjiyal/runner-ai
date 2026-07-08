@@ -1,3 +1,28 @@
+# Full local stack: infra (mongodb, redis, qdrant, minio) + app (backend, worker).
+#
+#   docker compose up --build
+#
+# API keys / overrides are read from a repo-root .env (Compose auto-loads it for
+# ${VAR} interpolation) or the host environment. In-container service hostnames
+# are set below and override any localhost values from .env.
+
+x-app-environment: &app-environment
+  MONGO_URL: mongodb://mongodb:27017
+  DB_NAME: runner_ai_v1
+  REDIS_URL: redis://redis:6379/0
+  QDRANT_URL: http://qdrant:6333
+  QDRANT_COLLECTION: document_chunks
+  MINIO_ENDPOINT: minio:9000
+  MINIO_ACCESS_KEY: minioadmin
+  MINIO_SECRET_KEY: minioadmin
+  MINIO_BUCKET: runner-uploads
+  MINIO_SECURE: "false"
+  LLM_PROVIDER: ${LLM_PROVIDER:-auto}
+  LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
 services:
   mongodb:
     image: mongo:7
@@ -8,6 +33,11 @@ services:
       - runner_mongo_data:/data/db
     environment:
       MONGO_INITDB_DATABASE: runner_ai_v1
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   redis:
@@ -17,6 +47,11 @@ services:
       - "6379:6379"
     volumes:
       - runner_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
 
   qdrant:
@@ -41,6 +76,46 @@ services:
       MINIO_ROOT_PASSWORD: minioadmin
     volumes:
       - runner_minio_data:/data
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    image: runner-ai-backend:latest
+    container_name: runner_backend
+    environment: *app-environment
+    ports:
+      - "8000:8000"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    image: runner-ai-backend:latest
+    container_name: runner_worker
+    command: python -m app.worker
+    environment: *app-environment
+    depends_on:
+      backend:
+        condition: service_started
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      minio:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
