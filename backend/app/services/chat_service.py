@@ -15,6 +15,7 @@ from app.services.thread_summary_service import (
 )
 from app.services.summary_queue_service import enqueue_thread_summary_job
 from app.services.context_policy_service import get_context_policy
+from app.config import settings
 
 DEV_USER_ID = "dev_user"
 
@@ -96,8 +97,9 @@ async def handle_chat(
         role="assistant",
         content=assistant_answer,
         metadata={
-            "llm_provider": "dummy",
-            "context_recent_messages": len(context.get("recent_messages", [])),
+            "llm_provider": settings.llm_provider,
+            "llm_model": settings.llm_model,
+            "evidence_blocks": len(context.get("evidence", [])),
         },
     )
 

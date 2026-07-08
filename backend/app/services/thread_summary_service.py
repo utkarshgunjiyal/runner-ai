@@ -2,6 +2,36 @@ from datetime import datetime
 
 from app.database import thread_summaries_collection
 from app.services.message_service import get_messages_by_seq_range
+from app.services import llm_client
+from app.logging_config import get_logger
+
+logger = get_logger("thread_summary")
+
+_SUMMARY_SYSTEM = (
+    "You maintain a concise running summary of a conversation. Given the previous "
+    "summary and the new messages, produce an updated summary that preserves key "
+    "facts, decisions, user preferences, and open questions. Be factual and brief "
+    "(under ~200 words). Output only the summary."
+)
+
+
+async def _generate_summary(old_summary: str, formatted_messages: str) -> str:
+    """LLM-generated running summary, with a concatenation fallback on failure."""
+    prompt = (
+        f"Previous summary:\n{old_summary or '(none)'}\n\n"
+        f"New messages:\n{formatted_messages}\n\n"
+        "Updated summary:"
+    )
+    try:
+        summary = await llm_client.complete(_SUMMARY_SYSTEM, prompt)
+        if summary:
+            return summary
+    except llm_client.LLMError:
+        logger.exception("thread_summary.llm_failed")
+
+    # Fallback: keep prior summary and append the raw new messages so no
+    # conversation context is lost if the LLM is unavailable.
+    return f"{old_summary}\n\n{formatted_messages}".strip()
 
 
 async def get_thread_summary(user_id: str, thread_id: str) -> dict | None:
@@ -75,11 +105,7 @@ async def update_thread_summary(
         for msg in messages
     )
 
-    new_summary = (
-        f"{old_summary}\n\n"
-        f"Summary update for messages {from_seq}-{to_seq}:\n"
-        f"{formatted_messages}"
-    ).strip()
+    new_summary = await _generate_summary(old_summary, formatted_messages)
 
     await thread_summaries_collection.update_one(
         {

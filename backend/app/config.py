@@ -57,6 +57,19 @@ class Settings(BaseSettings):
     # (Phase 2/3). embedding_dim is the vector size stored in Qdrant.
     embedding_dim: int = 384
 
+    # -- LLM (Phase 3) -------------------------------------------------------
+    # provider: "auto" picks anthropic if ANTHROPIC_API_KEY is set, else
+    # openrouter if OPENROUTER_API_KEY is set, else a no-network "stub" so the
+    # app still runs without credentials. Set explicitly to override.
+    llm_provider: str = "auto"  # auto | anthropic | openrouter | stub
+    llm_model: str = "claude-sonnet-5"
+    anthropic_api_key: str | None = None
+    openrouter_api_key: str | None = None
+    llm_max_tokens: int = 1024
+    llm_temperature: float = 0.3
+    llm_timeout_seconds: float = 30.0
+    llm_max_retries: int = 2  # extra attempts on transient failures
+
     # -- Document ingestion --------------------------------------------------
     max_upload_bytes: int = 25 * 1024 * 1024  # 25 MB
     allowed_content_types: Annotated[List[str], NoDecode] = Field(
