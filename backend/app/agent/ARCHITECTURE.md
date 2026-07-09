@@ -438,7 +438,51 @@ adapters follow later.
 
 ---
 
-## 20. Final Context Builder
+## 20. Recovery Pipeline
+
+**Purpose.** Make execution resilient. Every tool call passes through recovery
+handling — the layer that decides what to do when a step fails or returns a weak
+output, before that failure propagates to the plan or the final answer.
+
+**Deterministic-first.** Most failures resolve deterministically, with no LLM:
+
+- **retry** — transient error (timeout, rate limit, 5xx): re-invoke with backoff.
+- **fallback capability** — swap to an equivalent capability for the same intent.
+- **ask user** — missing/ambiguous input or a required approval: hand back to HITL.
+- **graceful degradation** — proceed with a reduced result when a non-critical
+  step fails.
+- **partial result** — return what succeeded, clearly marked as partial.
+
+**Reflection LLM is the last resort — only for ambiguous failures or weak
+outputs** that no deterministic rule covers. It never runs on the happy path or
+on failures with a known recovery.
+
+**Scope boundary (V2 vs V3).** In V2, reflection is **runtime recovery only** —
+it repairs the current run and does not persist anything for future runs. **V3**
+extends reflection into **execution learning, dynamic replanning, and capability
+success scoring** (see §23), so recovery outcomes feed future planning.
+
+**Contract (planned).** The Reflection LLM returns a typed `RecoveryDecision`
+(JSON) which the Policy Engine (§16) validates before the Executor applies it —
+the same validate-before-act discipline the planner path uses. Every recovery
+event (deterministic or reflected) is recorded on `RunContext` for audit.
+
+**Workflow.**
+
+```
+Executor
+  → failure / weak output detected
+  → deterministic recovery policy
+  → known recovery?  → retry / fallback capability / ask user / partial result
+  → if unresolved    → Reflection LLM → RecoveryDecision (JSON)
+                     → Policy validates the recovery decision
+                     → Executor applies the decision
+  → RunContext records the recovery event
+```
+
+---
+
+## 21. Final Context Builder
 
 **Purpose.** Assemble the final-answer prompt from `RunContext` after the direct
 or planner path completes.
@@ -458,7 +502,7 @@ where the agent and V1.5 share one grounding-and-generation path.
 
 ---
 
-## 21. Observability plan
+## 22. Observability plan
 
 **Id hierarchy** (each id owned by the layer that creates it):
 
@@ -480,7 +524,7 @@ request_id      — per HTTP request      (exists: logging_config contextvar + m
 
 ---
 
-## 22. V3 roadmap (documentation only)
+## 23. V3 roadmap (documentation only)
 
 Beyond V2's plan-execute loop:
 
@@ -496,7 +540,7 @@ Beyond V2's plan-execute loop:
 
 ---
 
-## 23. Architecture Compatibility Report
+## 24. Architecture Compatibility Report
 
 ### 23.1 What Phase 1–9 already satisfies
 
@@ -567,7 +611,7 @@ None of these require breaking edits to Phase 1–9 public contracts.
 
 ---
 
-## 24. Next implementation phases (from this branch onward)
+## 25. Next implementation phases (from this branch onward)
 
 Ordered to keep each phase independently testable and to reach an end-to-end
 `/agent/run` as directly as possible.
@@ -597,7 +641,7 @@ Ordered to keep each phase independently testable and to reach an end-to-end
 
 Later, independently: hybrid/embedding capability retrieval and reranker (§7,
 §12), parallel execution + retries/timeouts in the Executor, and the V3 items
-(§22).
+(§23).
 
 ### Recommended next implementation phase
 
