@@ -15,6 +15,18 @@ _NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 
 _client: AsyncQdrantClient | None = None
 
+# Payload fields that are used in query filters. Qdrant (Cloud) requires a
+# payload index on any filtered field, or query_points returns
+# "Index required but not found for ...". Created idempotently on init.
+_PAYLOAD_INDEXES = {
+    "user_id": models.PayloadSchemaType.KEYWORD,
+    "document_id": models.PayloadSchemaType.KEYWORD,
+    "thread_id": models.PayloadSchemaType.KEYWORD,
+    "page": models.PayloadSchemaType.INTEGER,
+}
+
+_indexes_ensured = False
+
 
 def get_client() -> AsyncQdrantClient:
     global _client
@@ -24,6 +36,40 @@ def get_client() -> AsyncQdrantClient:
             api_key=settings.qdrant_api_key,
         )
     return _client
+
+
+async def _ensure_payload_indexes(client: AsyncQdrantClient) -> None:
+    """Create the payload indexes needed for filtered search (idempotent).
+
+    Runs once per process. AlreadyExists / benign errors are ignored; a real
+    error leaves the flag unset so a later call retries.
+    """
+    global _indexes_ensured
+    if _indexes_ensured:
+        return
+
+    all_ok = True
+    for field_name, field_schema in _PAYLOAD_INDEXES.items():
+        try:
+            await client.create_payload_index(
+                collection_name=settings.qdrant_collection,
+                field_name=field_name,
+                field_schema=field_schema,
+                wait=True,
+            )
+            logger.info("vector_store.payload_index_ready", extra={"field": field_name})
+        except Exception as exc:  # noqa: BLE001 - tolerate already-exists / transient
+            message = str(exc).lower()
+            if "already" in message or "exist" in message:
+                continue  # index already present — fine
+            all_ok = False
+            logger.warning(
+                "vector_store.payload_index_error",
+                extra={"field": field_name, "error": str(exc)},
+            )
+
+    if all_ok:
+        _indexes_ensured = True
 
 
 async def ensure_collection() -> None:
@@ -40,6 +86,10 @@ async def ensure_collection() -> None:
             "vector_store.collection_created",
             extra={"collection": settings.qdrant_collection, "dim": settings.embedding_dim},
         )
+
+    # Ensure filter payload indexes exist (idempotent) — required by Qdrant for
+    # filtered queries, whether or not the collection already existed.
+    await _ensure_payload_indexes(client)
 
 
 def _point_id(document_id: str, chunk_index: int) -> str:

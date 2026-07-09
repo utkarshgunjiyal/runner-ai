@@ -31,6 +31,18 @@ async def lifespan(app: FastAPI):
     )
     await ensure_indexes()
     logger.info("app.indexes_ready")
+
+    # Best-effort: ensure the Qdrant collection + payload indexes exist so the
+    # first document query doesn't fail on a missing index. If Qdrant is briefly
+    # unavailable at boot, retrieval's lazy ensure_collection() retries later.
+    try:
+        from app.services import vector_store_service
+
+        await vector_store_service.ensure_collection()
+        logger.info("app.vector_store_ready")
+    except Exception:  # noqa: BLE001 - non-fatal; lazy init covers it
+        logger.warning("app.vector_store_init_deferred", exc_info=True)
+
     yield
     client.close()
     logger.info("app.shutdown")
