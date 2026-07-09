@@ -30,6 +30,32 @@ def generate_thread_title(question: str) -> str:
     return question[:60]
 
 
+def build_request_plan(question: str, document_id: str | None):
+    """Route to document retrieval when a document_id is explicitly supplied.
+
+    The keyword router won't classify e.g. "What projects are in this resume?"
+    as a document question, so an explicit document_id promotes a `general`
+    request to `document` intent so its chunks are retrieved from Qdrant.
+    """
+    plan = create_request_plan(question)
+    if document_id and plan.intent == "general":
+        plan = plan.model_copy(update={"intent": "document"})
+    return plan
+
+
+def _evidence_from_memory(memory) -> list[dict]:
+    return [
+        {
+            "text": item.content,
+            "score": item.metadata.get("similarity_score"),
+            "page": item.metadata.get("page"),
+            "document_id": item.metadata.get("document_id"),
+            "chunk_index": item.metadata.get("chunk_index"),
+        }
+        for item in memory.chunks
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Shared pipeline stages (used by both /chat/ask and /chat/stream)
 # ---------------------------------------------------------------------------
@@ -107,7 +133,7 @@ async def handle_chat(
     thread_id = await ensure_thread(user_id, thread_id, question)
     user_seq = await record_user_message(user_id, thread_id, question)
 
-    request_plan = create_request_plan(question)
+    request_plan = build_request_plan(question, document_id)
     context_policy = get_context_policy(request_plan)
     await maybe_save_preference(user_id, question, request_plan, user_seq)
 
@@ -131,7 +157,11 @@ async def handle_chat(
     assistant_seq = await persist_answer(user_id, thread_id, context, assistant_answer)
     await maybe_enqueue_summary(user_id, thread_id, assistant_seq)
 
-    return {"thread_id": thread_id, "answer": assistant_answer}
+    return {
+        "thread_id": thread_id,
+        "answer": assistant_answer,
+        "evidence": _evidence_from_memory(memory),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +191,7 @@ async def stream_chat(
         user_seq = await record_user_message(user_id, thread_id, question)
 
         yield _event("planning_started")
-        request_plan = create_request_plan(question)
+        request_plan = build_request_plan(question, document_id)
         context_policy = get_context_policy(request_plan)
         await maybe_save_preference(user_id, question, request_plan, user_seq)
 

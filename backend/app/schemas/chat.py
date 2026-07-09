@@ -11,3 +11,6 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     thread_id: str
     answer: str
+    # Retrieved document chunks used to ground the answer (empty for non-document
+    # questions). Each item: text, score, page, document_id, chunk_index.
+    evidence: list[dict] = Field(default_factory=list)
