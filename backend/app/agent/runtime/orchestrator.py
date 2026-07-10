@@ -36,6 +36,7 @@ from app.agent.llm.final_provider import (
 from app.agent.models.final_prompt import FinalPrompt
 from app.agent.repair.runtime import RepairRuntime
 from app.agent.runtime.context import BehaviorPath, RunContext
+from app.agent.runtime.outcome import RuntimeOutcome, derive_runtime_outcome
 from app.agent.runtime.planner_runtime import ExecutionPlan
 
 
@@ -97,6 +98,9 @@ class AgentRunResult(BaseModel):
     answer: FinalAnswer
     final_prompt: FinalPrompt
     run_context: RunContext
+    runtime_outcome: RuntimeOutcome = RuntimeOutcome.COMPLETED
+    pending_action: str | None = None
+    pending_reason: str | None = None
     metadata: dict = Field(default_factory=dict)
 
 
@@ -168,9 +172,12 @@ class AgentOrchestrator:
         }
 
         # 4b (optional). Evaluate the draft and apply bounded local repair.
-        if self._answer_evaluator is not None:
-            final_prompt, answer, report, records = await self._evaluate_and_repair(
-                run_context, final_prompt, answer
+        evaluator_ran = self._answer_evaluator is not None
+        report = None
+        terminal_repair = None
+        if evaluator_ran:
+            final_prompt, answer, report, records, terminal_repair = (
+                await self._evaluate_and_repair(run_context, final_prompt, answer)
             )
             result_metadata.update(
                 {
@@ -183,6 +190,14 @@ class AgentOrchestrator:
                 }
             )
 
+        # Derive the terminal runtime outcome (contract for API/UI/workers/HITL).
+        # Deferred repairs are exposed here, never executed.
+        outcome, pending_action, pending_reason = derive_runtime_outcome(
+            evaluator_ran, report, terminal_repair
+        )
+        result_metadata["runtime_outcome"] = outcome.value
+        run_context.metadata["runtime_outcome"] = outcome.value
+
         # 7. Structured result.
         return AgentRunResult(
             run_id=run_context.run_id,
@@ -192,6 +207,9 @@ class AgentOrchestrator:
             answer=answer,
             final_prompt=final_prompt,
             run_context=run_context,
+            runtime_outcome=outcome,
+            pending_action=pending_action,
+            pending_reason=pending_reason,
             metadata=result_metadata,
         )
 
@@ -209,9 +227,11 @@ class AgentOrchestrator:
         attach_evaluation_report(run_context, report)
 
         records: list[dict] = []
+        terminal_repair = None
         rounds = 0
         while not report.passed and rounds < self._max_repair_rounds:
             result = repair_runtime.repair(run_context, final_prompt, answer, report)
+            terminal_repair = result
             records.append(
                 {
                     "round": rounds + 1,
@@ -236,7 +256,7 @@ class AgentOrchestrator:
             break
 
         run_context.metadata["repair_rounds"] = records
-        return final_prompt, answer, report, records
+        return final_prompt, answer, report, records, terminal_repair
 
     async def _resolve_plan(self, run_context: RunContext) -> ExecutionPlan:
         if self._plan_source is None:
