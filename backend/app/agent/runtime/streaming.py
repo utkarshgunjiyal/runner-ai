@@ -82,7 +82,7 @@ class RuntimeStreamer:
         add(
             E.CONTEXT_COMPLETED,
             providers=metadata.get("context_providers"),
-            working_context_size=len(run_context.working_context),
+            context_size=len(run_context.working_context),
         )
 
         # Retrieval

@@ -17,7 +17,10 @@ Config-free at import: dependencies (current user, resume coordinator) are
 resolved at request time and overridable in tests. No streaming, no Mongo store.
 """
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.agent.checkpoint.resume import ResumeResolution
 from app.agent.checkpoint.store import (
@@ -25,9 +28,11 @@ from app.agent.checkpoint.store import (
     InMemoryCheckpointStore,
     is_checkpointable,
 )
+from app.agent.runtime.events import RuntimeEvent
 from app.agent.runtime.factory import build_default_runtime
 from app.agent.runtime.outcome import RuntimeOutcome
 from app.agent.runtime.resume_coordinator import ResumeCoordinator
+from app.agent.runtime.streaming import RuntimeStreamer
 from app.schemas.agent import AgentResumeRequest, AgentRunRequest, AgentRunResponse
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -60,16 +65,31 @@ def resolve_user_id(user) -> str:
     return DEV_USER_ID
 
 
-# Lazily-built default coordinator (in-memory store for now — replaceable with a
-# Mongo-backed store later without touching the handler).
+# Lazily-built, shared default runtime. /agent/run, /agent/resume and
+# /agent/run/stream all use the SAME orchestrator instance — no duplicated
+# runtime construction. The in-memory store is replaceable with a Mongo-backed
+# store later without touching any handler.
+_orchestrator = None
 _coordinator: ResumeCoordinator | None = None
+
+
+def _get_orchestrator():
+    global _orchestrator
+    if _orchestrator is None:
+        _orchestrator = build_default_runtime()
+    return _orchestrator
 
 
 def get_resume_coordinator() -> ResumeCoordinator:
     global _coordinator
     if _coordinator is None:
-        _coordinator = ResumeCoordinator(build_default_runtime(), InMemoryCheckpointStore())
+        _coordinator = ResumeCoordinator(_get_orchestrator(), InMemoryCheckpointStore())
     return _coordinator
+
+
+def get_runtime_streamer() -> RuntimeStreamer:
+    # Wraps the same orchestrator used by /agent/run — transport only.
+    return RuntimeStreamer(_get_orchestrator())
 
 
 def _to_response(coord_result) -> AgentRunResponse:
@@ -126,3 +146,36 @@ async def resume_agent(
     except CheckpointNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _to_response(coord_result)
+
+
+def _sse(event: RuntimeEvent) -> str:
+    """Serialize one RuntimeEvent as an SSE frame (event: <type>\\ndata: <json>)."""
+    return f"event: {event.type.value}\ndata: {json.dumps(event.model_dump())}\n\n"
+
+
+@router.post("/run/stream")
+async def run_agent_stream(
+    request: AgentRunRequest,
+    user=Depends(get_current_user),
+    streamer: RuntimeStreamer = Depends(get_runtime_streamer),
+) -> StreamingResponse:
+    user_id = resolve_user_id(user)
+
+    async def event_source():
+        # Transport only: the RuntimeStreamer owns event ordering/generation; the
+        # route just serializes each RuntimeEvent to the SSE wire format.
+        async for event in streamer.run_stream(
+            request.user_request, user_id,
+            thread_id=request.thread_id, metadata=request.metadata,
+        ):
+            yield _sse(event)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
