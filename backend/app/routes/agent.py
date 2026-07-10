@@ -19,10 +19,11 @@ resolved at request time and overridable in tests. No streaming, no Mongo store.
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.agent.checkpoint.resume import ResumeResolution
+from app.sse import sse_event_source
 from app.agent.checkpoint.store import (
     CheckpointConflictError,
     CheckpointNotFoundError,
@@ -207,6 +208,17 @@ async def resume_agent(
     return _to_response(coord_result)
 
 
+# SSE keep-alive interval (seconds). Set by the composition root; 0 disables
+# heartbeats. Kept as a module global so routes stay config-free at import.
+_sse_heartbeat_seconds: float = 15.0
+
+
+def configure_sse(*, heartbeat_seconds: float) -> None:
+    """Composition-root hook: set the SSE heartbeat interval (Phase 42A)."""
+    global _sse_heartbeat_seconds
+    _sse_heartbeat_seconds = float(heartbeat_seconds)
+
+
 def _sse(event: RuntimeEvent) -> str:
     """Serialize one RuntimeEvent as an SSE frame (event: <type>\\ndata: <json>)."""
     return f"event: {event.type.value}\ndata: {json.dumps(event.model_dump())}\n\n"
@@ -215,22 +227,26 @@ def _sse(event: RuntimeEvent) -> str:
 @router.post("/run/stream")
 async def run_agent_stream(
     request: AgentRunRequest,
+    http_request: Request,
     user=Depends(get_current_user),
     streamer: RuntimeStreamer = Depends(get_runtime_streamer),
 ) -> StreamingResponse:
     user_id = resolve_user_id(user)
 
-    async def event_source():
-        # Transport only: the RuntimeStreamer owns event ordering/generation; the
-        # route just serializes each RuntimeEvent to the SSE wire format.
-        async for event in streamer.run_stream(
+    # Transport only: the RuntimeStreamer owns event ordering/generation; the SSE
+    # helper adds heartbeats and cancels the run cleanly on client disconnect.
+    event_source = sse_event_source(
+        streamer.run_stream(
             request.user_request, user_id,
             thread_id=request.thread_id, metadata=request.metadata,
-        ):
-            yield _sse(event)
+        ),
+        serialize=_sse,
+        is_disconnected=http_request.is_disconnected,
+        heartbeat_seconds=_sse_heartbeat_seconds,
+    )
 
     return StreamingResponse(
-        event_source(),
+        event_source,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

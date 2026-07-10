@@ -46,11 +46,24 @@ and never stores tokens in `localStorage`.
 
 ```bash
 npm run typecheck    # tsc --noEmit
-npm run lint         # eslint (0 warnings allowed)
+npm run lint         # eslint 9 flat config (0 warnings allowed)
 npm test             # vitest (mocked fetch/streams — no live backend needed)
 npm run build        # typecheck + production build to dist/
 npm run preview      # preview the production build
 ```
+
+## Production (Docker)
+
+The production image (`frontend/Dockerfile`) is a multi-stage build: it compiles
+the Vite assets and serves them with **nginx** (SPA fallback + `/agent` reverse
+proxy with buffering off for SSE). The Vite dev server is **not** used in
+production. The backend URL is set at container start via `BACKEND_URL` (default
+`http://backend:8000`) — no rebuild needed to repoint it. Keep `VITE_BACKEND_URL`
+empty so the SPA calls `/agent` same-origin and nginx proxies it (cookies stay
+same-origin). Copy `.env.example` → `.env` for local overrides.
+
+Brought up with the rest of the stack via `docker compose` (see
+[../docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md)); the UI is served on `:3000`.
 
 ## Architecture
 

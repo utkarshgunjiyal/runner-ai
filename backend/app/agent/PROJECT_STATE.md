@@ -75,8 +75,8 @@ config-free and unit-testable without a database or credentials.
 | Field | Value |
 |---|---|
 | **Branch** | `v2-autonomous-platform` |
-| **Latest commit** | `V2 Phase 41B: Frontend + Human-in-the-Loop` |
-| **Test count** | **650 backend** (`600` `tests/agent`, `50` `tests/api`) + **30 frontend** (Vitest) |
+| **Latest commit** | `V2 Phase 42A: Production Hardening, CI/CD, Observability & Deployment` |
+| **Test count** | **682 backend** (`600` `tests/agent`, `50` `tests/api`, `32` `tests/ops`) + **30 frontend** (Vitest) |
 | **Python** | 3.11 (developed on 3.11.15) |
 | **Test command** | `cd backend && python -m pytest` |
 
@@ -395,6 +395,35 @@ stay transport-only, and it is covered by backend tests. **Decision:** the
 frontend never redesigns the runtime, moves logic into React, exposes internals,
 stores tokens in `localStorage`, uses WebSockets/polling, or fakes resume
 streaming; resume stays JSON with a loading state.
+
+### Phase 42A — Production Hardening, CI/CD, Observability & Deployment
+Operational hardening only — **no runtime feature changes** (planner, context,
+retrieval, execution bridge, evaluation, repair, checkpointing, MCP, HITL all
+untouched). Additive, opt-in, safe-by-default:
+- **Observability**: injectable `MetricsSink` (`app/observability/metrics.py`,
+  NoOp default) + in-memory registry + optional isolated Prometheus adapter;
+  `/metrics` only when enabled; HTTP metrics middleware; a label guard drops
+  high-cardinality/sensitive keys. Validated request **correlation ids**.
+- **Health**: `/health/live` + `/health/ready` (Mongo/Redis/Qdrant/MinIO, safe,
+  no leak, no paid LLM calls); the legacy `/health` no longer leaks error detail.
+- **SSE hardening**: heartbeat comments + client-disconnect cancellation
+  (`app/sse.py` + `RuntimeStreamer` cancels its background run) — no orphaned
+  tasks, no `runtime_completed` after disconnect. Route stays transport-only.
+- **Rate limiting** (`app/rate_limit.py`): Redis + in-memory fallback, per-route
+  buckets, 429 + `Retry-After`, opt-in via `RateLimitMiddleware`.
+- **Security**: security-headers + body-size middleware; CORS unchanged.
+- **Docker/CI**: hardened backend Dockerfile (tini, healthcheck, proxy-headers)
+  + multi-stage frontend Dockerfile (nginx SPA, SSE-safe proxy); `docker-compose`
+  (frontend + minio-init + health ordering) + `docker-compose.prod.yml`; GitHub
+  Actions CI (backend pytest, frontend typecheck/lint/test/build, image build +
+  compose validate).
+- **Dependency hygiene**: frontend migrated to ESLint 9 flat config +
+  `typescript-eslint` 8 (resolves ESLint-8 + TS-mismatch warnings); V2 executor
+  made timezone-aware; dev-only `vite`/`vitest`/`esbuild` advisories documented as
+  accepted (not in the production static build). **Docs**: `docs/{DEPLOYMENT,
+  OPERATIONS,SECURITY,RUNBOOK}.md`. **Decision:** all ops features default off/safe
+  so the default suite and dev workflow are byte-identical; the dev auth stub must
+  be replaced before public deploy (documented, not redesigned here).
 
 ---
 
@@ -828,7 +857,8 @@ reason — most of the codebase relies on them.
 | **Phase 40 ✅** | **Unified Tool Registry & Capability Platform** | *Done.* `CapabilitySource` + `UnifiedCapabilityRegistry`: internal / MCP / future sources mount into one shared registry (namespaces, ownership, atomic refresh, lifecycle); retrieval and the execution bridge are unchanged; the factory composes sources. Planner is unaware of origin; default runtime unchanged. |
 | **Phase 41A ✅** | **Production MCP Transport & Capability Lifecycle** | *Done.* Real JSON-RPC transports (`StdioTransport`, `StreamableHTTPTransport`, no SDK) behind an `MCPTransport` abstraction; `MCPConnectionManager` (pool/lazy/reuse/reconnect/idle/shutdown/health); `TransportMCPClient` swap-in for `FakeMCPClient`; transport error taxonomy → `AdapterResult`; composition root owns the connection lifecycle (feature-flagged, default off). Runtime/planner/retrieval/execution unchanged. |
 | **Phase 41B ✅** | **Frontend + Human-in-the-Loop** | *Done.* React + TS + Vite SPA: streaming answer, safe runtime timeline, HITL (clarification/approval/rejection/deferred) with checkpoint resume, cookie auth, 30 Vitest tests. One additive backend change: streamed `WAITING_*` runs now carry a resumable `checkpoint_id`. |
-| **Phase 42** | **Production hardening** | Streaming transport hardening (keep-alive, client-disconnect cancellation), observability/metrics, rate limiting, load/soak testing, and deployment/runbook polish. |
+| **Phase 42A ✅** | **Production Hardening, CI/CD, Observability & Deployment** | *Done.* Metrics abstraction + `/metrics`, correlation ids, `/health/{live,ready}`, SSE heartbeat + disconnect cancellation, rate limiting (Redis + fallback), security headers, hardened Docker + frontend image + `docker-compose.prod.yml`, GitHub Actions CI, ESLint 9 migration, docs. Opt-in/safe-by-default; runtime unchanged. |
+| **Phase 42B** | **Deployment, Demo & Interview Readiness** | Pick a deploy target and ship it; seed data + a scripted demo flow; load/soak testing; the deferred MCP items (server→client SSE, per-capability permission policy); real auth wiring; and a polished interview walkthrough. |
 
 **Phase 41A current limitations (intentional scope boundary).** Real transports
 ship, but no MCP dependency/live server is required: `agent_mcp_enabled` defaults
@@ -843,8 +873,19 @@ against the existing dev-user auth stub — no login screen ships (cookie auth w
 is a deployment concern); it degrades safely on 401. `WAITING_FOR_CONTEXT` /
 `WAITING_FOR_REPLAN` render an honest deferred state and offer **no** resume action
 (the backend's continuation for those is deferred, not fabricated). The default
-frontend test suite mocks `fetch`/`ReadableStream` — no live backend. `next
-recommended phase` → **Phase 42 — Production hardening**.
+frontend test suite mocks `fetch`/`ReadableStream` — no live backend.
+
+**Phase 42A current limitations (intentional scope boundary).** Operational
+features are **opt-in and default-off** (metrics, rate limiting), so the default
+suite/dev workflow are byte-identical — enable them via env for production. No
+deploy target is configured: this phase ships production-capable *builds and
+composition*, not a deployment (Docker image build was validated via `docker
+compose config` + CI; the local sandbox had no Docker daemon). The dev auth stub
+is unchanged (documented in `docs/SECURITY.md` as a must-replace). Dev-only
+`vite`/`vitest`/`esbuild` advisories are accepted (not in the production static
+build). `datetime.utcnow()` remains in the locked V1.5 services (V2 executor was
+made tz-aware). `next recommended phase` → **Phase 42B — Deployment, Demo &
+Interview Readiness**.
 
 ---
 
@@ -895,6 +936,10 @@ recommended phase` → **Phase 42 — Production hardening**.
 - **Frontend (Phase 41B, Vitest):** `sseClient.test` (POST-SSE parsing),
   `runReducer.test` (state machine + safe timeline), `hitl.test` (HITL panels),
   `useAgentRun.test` (submit → stream → waiting → resume, duplicate-resume guard).
+- **Ops (Phase 42A, `tests/ops/`):** `test_observability` (correlation + metrics
+  + label guard), `test_rate_limit`, `test_http_middleware` (correlation /
+  security headers / body limit / rate limit / safe errors), `test_health`
+  (readiness, no leak), `test_sse_hardening` (heartbeat + disconnect cancellation).
 
 ---
 

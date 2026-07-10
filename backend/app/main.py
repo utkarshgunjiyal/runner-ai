@@ -1,13 +1,20 @@
-import time
-import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 
 from app.config import settings
-from app.logging_config import configure_logging, get_logger, request_id_ctx
+from app.logging_config import configure_logging, get_logger
 from app.database import client, ensure_indexes
+from app.http_middleware import (
+    BodySizeLimitMiddleware,
+    RateLimitMiddleware,
+    RequestContextMiddleware,
+    SecurityHeadersMiddleware,
+)
+from app.observability.metrics import NoOpMetrics, build_metrics_sink, configure_metrics
+from app.rate_limit import InMemoryRateLimiter, RateLimits
 from app.routes.health import router as health_router
 from app.routes.chat import router as chat_router
 from app.routes.documents import router as documents_router
@@ -17,12 +24,41 @@ from app.routes.agent import (
     router as agent_router,
     configure_checkpoint_store,
     configure_agent_runtime,
+    configure_sse,
 )
 from app.agent.checkpoint.composition import select_checkpoint_store
 from app.agent.checkpoint.mongo_store import mongo_collection_from_uri
 
 configure_logging(settings.log_level)
 logger = get_logger("app")
+
+# -- Operational composition (Phase 42A) ------------------------------------ #
+# Metrics sink: NoOp unless enabled; the backend (memory/prometheus) is selected
+# here and installed process-wide. Rate limiter: Redis when configured, else an
+# in-process fallback. Both are built once at import from settings.
+_metrics = build_metrics_sink(settings.metrics_backend) if settings.metrics_enabled else NoOpMetrics()
+configure_metrics(_metrics)
+
+
+def _build_rate_limiter():
+    if settings.rate_limit_enabled and settings.rate_limit_backend == "redis":
+        try:
+            from redis import asyncio as redis_asyncio
+
+            from app.rate_limit import RedisRateLimiter
+
+            return RedisRateLimiter(redis_asyncio.from_url(settings.redis_url))
+        except Exception:  # noqa: BLE001 - degrade to in-process on any wiring error
+            logger.warning("app.rate_limiter_redis_unavailable_falling_back")
+    return InMemoryRateLimiter()
+
+
+_rate_limiter = _build_rate_limiter()
+_rate_limits = RateLimits(
+    run=settings.rate_limit_run_per_minute,
+    stream=settings.rate_limit_stream_per_minute,
+    resume=settings.rate_limit_resume_per_minute,
+)
 
 
 @asynccontextmanager
@@ -82,6 +118,17 @@ async def lifespan(app: FastAPI):
     )
     logger.info("app.agent_llm_ready", extra={"use_real_llm": settings.agent_use_real_llm})
 
+    # SSE keep-alive interval (Phase 42A). Routes stay config-free; set here.
+    configure_sse(heartbeat_seconds=settings.sse_heartbeat_seconds)
+    logger.info(
+        "app.ops_ready",
+        extra={
+            "metrics_enabled": settings.metrics_enabled,
+            "rate_limit_enabled": settings.rate_limit_enabled,
+            "sse_heartbeat_seconds": settings.sse_heartbeat_seconds,
+        },
+    )
+
     yield
 
     if mcp_connection_manager is not None:
@@ -109,8 +156,31 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Middleware stack (Phase 42A). Added inner→outer, so execution order is:
+# CORS → RequestContext (correlation + metrics + logging) → SecurityHeaders →
+# BodySizeLimit → RateLimit → routes. Rate-limit/body-limit rejections still get
+# correlation headers, metrics, and CORS headers.
+app.add_middleware(
+    RateLimitMiddleware,
+    enabled=settings.rate_limit_enabled,
+    limiter=_rate_limiter,
+    limits=_rate_limits,
+    metrics=_metrics,
+)
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_body_bytes)
+app.add_middleware(
+    SecurityHeadersMiddleware,
+    enabled=settings.security_headers_enabled,
+    csp=settings.content_security_policy,
+)
+app.add_middleware(
+    RequestContextMiddleware,
+    header_name=settings.correlation_id_header,
+    metrics=_metrics,
+)
+
 # Credentials cannot be combined with a wildcard origin per the CORS spec, so
-# only enable them when explicit origins are configured.
+# only enable them when explicit origins are configured. CORS is outermost.
 _allow_all_origins = settings.cors_origins == ["*"]
 app.add_middleware(
     CORSMiddleware,
@@ -118,44 +188,17 @@ app.add_middleware(
     allow_credentials=not _allow_all_origins,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Request-ID"],
+    expose_headers=[settings.correlation_id_header],
 )
 
 
-@app.middleware("http")
-async def request_context_middleware(request: Request, call_next):
-    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
-    token = request_id_ctx.set(request_id)
-    start = time.perf_counter()
-
-    try:
-        response = await call_next(request)
-    except Exception:
-        duration_ms = round((time.perf_counter() - start) * 1000, 2)
-        logger.exception(
-            "request.failed",
-            extra={
-                "method": request.method,
-                "path": request.url.path,
-                "duration_ms": duration_ms,
-            },
-        )
-        request_id_ctx.reset(token)
-        raise
-
-    duration_ms = round((time.perf_counter() - start) * 1000, 2)
-    logger.info(
-        "request.completed",
-        extra={
-            "method": request.method,
-            "path": request.url.path,
-            "status_code": response.status_code,
-            "duration_ms": duration_ms,
-        },
-    )
-    response.headers["X-Request-ID"] = request_id
-    request_id_ctx.reset(token)
-    return response
+if settings.metrics_enabled:
+    @app.get("/metrics")
+    async def metrics_endpoint() -> PlainTextResponse:
+        # Provider-neutral text exposition; only mounted when metrics are enabled.
+        render = getattr(_metrics, "render_text", None)
+        body = render() if callable(render) else ""
+        return PlainTextResponse(body, media_type="text/plain; version=0.0.4")
 
 
 app.include_router(health_router)

@@ -1,0 +1,58 @@
+# Production-like override. Use together with the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Differences from the dev base:
+# - infra ports are NOT published to the host (reachable only on the internal
+#   network) to reduce attack surface;
+# - operational features are turned on (rate limiting via Redis, metrics,
+#   Mongo-backed checkpoints, real LLM);
+# - restart: always;
+# - all secrets/credentials come from the host environment or a root .env —
+#   nothing production-sensitive is hard-coded here.
+#
+# REQUIRED before deploy: set strong MINIO_ROOT_USER/PASSWORD, a real
+# ANTHROPIC_API_KEY (or OPENROUTER_API_KEY), CORS_ORIGINS to your app origin, and
+# replace the dev auth stub with real authentication (see docs/SECURITY.md).
+
+services:
+  mongodb:
+    ports: []
+    restart: always
+
+  redis:
+    ports: []
+    restart: always
+
+  qdrant:
+    ports: []
+    restart: always
+
+  minio:
+    ports:
+      - "9001:9001"   # console only; the S3 API stays internal
+    restart: always
+
+  backend:
+    environment:
+      ENVIRONMENT: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS to your app origin(s)}
+      AGENT_CHECKPOINT_BACKEND: mongo
+      AGENT_USE_REAL_LLM: "true"
+      METRICS_ENABLED: "true"
+      METRICS_BACKEND: ${METRICS_BACKEND:-memory}
+      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_BACKEND: redis
+      SECURITY_HEADERS_ENABLED: "true"
+    ports:
+      - "8000:8000"
+    restart: always
+
+  worker:
+    restart: always
+
+  frontend:
+    ports:
+      - "80:80"
+    restart: always

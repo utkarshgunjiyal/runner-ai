@@ -5,7 +5,11 @@ __pycache__/
 *.pyo
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 .env
 .env.*
 !.env.example
 _phase*_smoke.py
+# Tests are not needed in the production image.
+tests/
+*.log

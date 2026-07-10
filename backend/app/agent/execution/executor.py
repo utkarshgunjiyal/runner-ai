@@ -12,7 +12,7 @@ foundation only:
 
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.agent.execution.runner import ToolRunner
 from app.agent.execution.state import ExecutionState
@@ -123,11 +123,11 @@ class PlanExecutor:
             self._record(state, step, StepStatus.FAILED, error=str(exc))
             return
 
-        started = datetime.utcnow()
+        started = datetime.now(timezone.utc)
         try:
             output = self._runner.run(step, resolved_args)
         except Exception as exc:  # noqa: BLE001 - record any tool failure
-            ended = datetime.utcnow()
+            ended = datetime.now(timezone.utc)
             self._record(
                 state, step, StepStatus.FAILED,
                 input=resolved_args, error=str(exc),
@@ -135,7 +135,7 @@ class PlanExecutor:
             )
             return
 
-        ended = datetime.utcnow()
+        ended = datetime.now(timezone.utc)
         self._record(
             state, step, StepStatus.SUCCEEDED,
             input=resolved_args, output=output,

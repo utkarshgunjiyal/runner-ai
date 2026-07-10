@@ -100,7 +100,17 @@ class RuntimeStreamer:
                 event_type, run_id, data = item
                 yield seq.make(event_type, run_id=run_id, data=data)
         finally:
-            await task
+            # Normal completion: the drive task is already done. Early close
+            # (client disconnect / cancellation): cancel the background run so no
+            # orchestrator/provider work is orphaned (Phase 42A).
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            else:
+                await task
 
         # Terminal event (never emitted mid-stream by the orchestrator).
         if "error" in outcome:

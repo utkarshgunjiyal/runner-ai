@@ -114,6 +114,62 @@ class Settings(BaseSettings):
     # when assembling evidence. Lower = more conservative (fewer chars per token).
     context_chars_per_token: int = 4
 
+    # -- Operational hardening (Phase 42A) -----------------------------------
+    # All operational features below are additive and default to a safe/off
+    # posture so the default test suite and dev workflow are unchanged.
+
+    # Request correlation. A client-supplied value in this header is honored only
+    # when it passes validation (safe charset, bounded length); otherwise a fresh
+    # id is generated. Independent of the runtime's run_id.
+    correlation_id_header: str = "X-Request-ID"
+    # Reject request bodies larger than this (safety ceiling; > max_upload_bytes so
+    # document uploads still work). 413 on exceed.
+    max_request_body_bytes: int = 32 * 1024 * 1024
+
+    # Security response headers (safe for an API; the SPA sets its own CSP in nginx).
+    security_headers_enabled: bool = True
+    content_security_policy: str = "default-src 'none'; frame-ancestors 'none'"
+
+    # Metrics. Provider-neutral by default (in-memory, no endpoint). Set
+    # metrics_enabled=True to expose GET /metrics; metrics_backend selects the
+    # adapter ("memory" text or "prometheus" when prometheus_client is installed).
+    metrics_enabled: bool = False
+    metrics_backend: str = "memory"  # memory | prometheus
+
+    # Rate limiting. Off by default (dev/tests unchanged). When enabled, applies
+    # to /agent/run, /agent/run/stream and /agent/resume, keyed by user (falling
+    # back to client host). "redis" is required for a real multi-process limit;
+    # "memory" is a per-process fallback for local use only.
+    rate_limit_enabled: bool = False
+    rate_limit_backend: str = "memory"  # memory | redis
+    rate_limit_run_per_minute: int = 30
+    rate_limit_stream_per_minute: int = 10
+    rate_limit_resume_per_minute: int = 60
+
+    # SSE keep-alive: emit a heartbeat comment after this many idle seconds so
+    # proxies do not close an idle stream. 0 disables heartbeats.
+    sse_heartbeat_seconds: float = 15.0
+
+    # Opt-in sensitive logging (prompts, payloads). OFF by default and never
+    # enabled in production; a guard for local debugging only.
+    log_sensitive: bool = False
+
+    @field_validator("metrics_backend")
+    @classmethod
+    def _validate_metrics_backend(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized not in {"memory", "prometheus"}:
+            raise ValueError(f"metrics_backend must be 'memory' or 'prometheus', got {value!r}")
+        return normalized
+
+    @field_validator("rate_limit_backend")
+    @classmethod
+    def _validate_rate_limit_backend(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized not in {"memory", "redis"}:
+            raise ValueError(f"rate_limit_backend must be 'memory' or 'redis', got {value!r}")
+        return normalized
+
     @field_validator("allowed_content_types", mode="before")
     @classmethod
     def _parse_content_types(cls, value):
