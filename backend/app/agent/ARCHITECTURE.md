@@ -198,6 +198,22 @@ so the cheap deterministic signal dominates and expensive judgment is optional.
 signals, and a short reason (for observability), mirroring how
 `CapabilityMatch` already records `matched_fields` / `reason`.
 
+**Production pipeline (locked).** Context priority is *not* deterministic-only.
+The full production design is a hybrid, multi-tier pipeline:
+
+```
+context candidates
+  → deterministic filtering / scoring   (tier 1 — implemented)
+  → semantic similarity                 (tier 2 — planned)
+  → reranker / cross-encoder            (tier 3 — planned)
+  → token budget                        (§8)
+  → planner / final context view
+```
+
+The current code implements **only tier 1** (deterministic). Tiers 2 and 3 are
+locked *production* tiers, not optional nice-to-haves — the architecture must
+show them even while the code ships deterministic-first. See §26.1.
+
 **Principle.** Deterministic first, semantic second, reranker last — never
 invert the order.
 
@@ -350,6 +366,27 @@ query and sets filters (`allowed_kinds`, `allowed_risk_levels`, `required_tags`,
 work unchanged; the embedding/hybrid retrievers slot in behind the same
 `CapabilityRetriever` interface.
 
+**Production pipeline (locked).** Capability retrieval is hybrid and
+RunContext-driven, mirroring context retrieval (§7):
+
+```
+capability registry
+  → deterministic filters               (kind / risk / tags / exclusions — implemented)
+  → semantic capability retrieval        (embed RunContext vs capability specs — planned)
+  → capability reranker                  (cross-encoder over top candidates — planned)
+  → top-k capability view
+```
+
+The input is the **`RunContext`**, never the raw request alone. The current code
+implements the deterministic filter tier plus a RunContext-aware query builder;
+the semantic and reranker tiers slot in behind the same `CapabilityRetriever`
+interface.
+
+**Invariant.** Neither the Planner nor the Direct Runtime ever sees the full
+registry — both consume only the **top-k capability view**. This bounds prompt
+size, cost, and blast radius, and keeps capability selection a first-class
+retrieval problem. See §26.2.
+
 **Output.** Top-K capabilities recorded on `RunContext.selected_capabilities`,
 rendered to the planner as the **planner view** (§12).
 
@@ -499,6 +536,21 @@ where the agent and V1.5 share one grounding-and-generation path.
 
 **Output.** The final answer plus the evidence actually used, recorded on
 `RunContext.final_response_metadata` and returned to the caller.
+
+**Final context selection (locked).** The final LLM must **never receive the
+whole `RunContext`**. `RunContext` is the full *internal* state; `FinalPrompt`
+is a curated *external* view. Building it is a **second retrieval/selection
+stage** (after execution, before answer generation) — not a dump. It
+selects, ranks, and budgets in this priority order:
+
+```
+evidence  >  tool outputs  >  relevant working context  >  execution summary  >  metadata
+```
+
+Evidence gets first claim on the answer budget; lower-priority material fills the
+remainder and is dropped or truncated when the budget is exhausted. This is the
+inbound-context pipeline (§7–§8) applied a second time to outbound context. See
+§26.3.
 
 ---
 
@@ -650,3 +702,102 @@ Later, independently: hybrid/embedding capability retrieval and reranker (§7,
 `RunContext`), it is fully deterministic and unit-testable without an LLM or live
 infrastructure, and it composes the existing Phase 7 `ExecutionState` without
 touching any Phase 1–9 or V1.5 code.
+
+---
+
+## 26. Locked architecture decisions (hybrid retrieval, final selection, LangGraph)
+
+This section records cross-cutting decisions that are **locked** at the
+architecture level regardless of what any single phase has shipped yet. Where a
+tier is marked *planned*, the code may implement only the deterministic tier
+today; the design is still the multi-tier pipeline described here.
+
+### 26.1 Hybrid Context Retrieval
+
+Context priority is **not deterministic-only**. The production design is a
+hybrid, tiered pipeline (see §7):
+
+```
+context candidates
+  → deterministic filtering / scoring    (tier 1 — implemented)
+  → semantic similarity                  (tier 2 — planned; app.services.embedding_service)
+  → reranker / cross-encoder             (tier 3 — planned)
+  → token budget                         (§8)
+  → planner / final context view
+```
+
+Tiers 2–3 are locked production tiers. Ordering authority never inverts:
+deterministic first, semantic second, reranker last.
+
+### 26.2 Hybrid Capability Retrieval
+
+Capability Retrieval must consume the **`RunContext`**, not the raw request
+alone (see §13). The production design mirrors context retrieval:
+
+```
+capability registry
+  → deterministic filters                (kind / risk / tags / exclusions — implemented)
+  → semantic capability retrieval        (planned)
+  → capability reranker                  (planned)
+  → top-k capability view
+```
+
+**Invariant.** The Planner and the Direct Runtime **never see the full
+registry** — only the top-k capability view. Capability selection is a
+first-class retrieval problem, bounded in size, cost, and blast radius.
+
+### 26.3 Final Context Selection
+
+The final LLM **never receives the whole `RunContext`**. `RunContext` is the
+full internal state; `FinalPrompt` is a curated external view. The Final Context
+Builder is a **second retrieval/selection stage** (after execution, before answer
+generation) that selects, ranks, and budgets in priority order:
+
+```
+evidence  >  tool outputs  >  relevant working context  >  execution summary  >  metadata
+```
+
+Evidence gets first claim on the answer budget; lower-priority material fills the
+remainder and is truncated/dropped when the budget is exhausted (see §21).
+
+### 26.4 LangGraph usage boundary
+
+**Runner.ai owns** the intelligence and control surface: context, memory,
+capability retrieval, planning, validation, policy, recovery, final-prompt
+construction, and — above all — the **`RunContext`**.
+
+**LangGraph is an optional *execution backend* only**, for:
+
+- parallel DAG execution,
+- checkpointing,
+- interrupt / resume,
+- human-in-the-loop (HITL).
+
+LangGraph must **not own the whole runtime**. `RunContext` remains the single
+source of truth; any LangGraph state is an **execution projection / adapter**
+derived from `RunContext` and reconciled back into it. The runtime must run
+end-to-end on the **native execution backend** with no LangGraph dependency;
+LangGraph is a swappable backend chosen per run, never the spine.
+
+### 26.5 Optimized end-to-end flow (production target)
+
+```
+Auth / API
+  → Runtime Orchestrator
+    → Context Engine
+      → Hybrid Context Retrieval        (deterministic → semantic → reranker → budget)   [§7, §26.1]
+    → Behavior Gate                     (direct vs planner)                               [§10]
+      → Hybrid Capability Retrieval     (RunContext-aware, top-k view)                    [§13, §26.2]
+        → Direct Runtime   OR   Planner Runtime
+            → Validator → Policy → Optimizer                                              [§15–§17]
+              → Execution backend:  Native   OR   LangGraph                               [§18–§19, §26.4]
+                → Recovery Pipeline   (deterministic-first; reflection last-resort)       [§20]
+                  → RunContext update  (tool outputs, evidence, execution state)          [§9]
+    → Final Context Selection           (curated FinalPrompt; second selection stage)     [§21, §26.3]
+      → FinalAnswerProvider             (provider-agnostic boundary)
+```
+
+Both paths converge on Final Context Selection; the execution backend (native or
+LangGraph) is an implementation detail beneath the Executor, not a replacement
+for it. `RunContext` threads through every stage and is the durable artifact at
+the end.
