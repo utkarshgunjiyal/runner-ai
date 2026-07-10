@@ -37,6 +37,17 @@ class MCPTransport(str, Enum):
     STREAMABLE_HTTP = "streamable_http"
 
 
+class MCPRetryConfig(BaseModel):
+    """Per-server transport retry policy (Phase 41A). Deterministic, bounded."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_attempts: int = Field(default=2, ge=1)
+    base_delay_seconds: float = Field(default=0.1, ge=0)
+    max_delay_seconds: float = Field(default=2.0, ge=0)
+    backoff: float = Field(default=2.0, ge=1)
+
+
 class MCPServerConfig(BaseModel):
     """Trusted configuration for one MCP server.
 
@@ -52,10 +63,12 @@ class MCPServerConfig(BaseModel):
     transport: MCPTransport
     command: list[str] | None = None
     url: str | None = None
+    working_directory: str | None = None
     environment: dict[str, str] | None = Field(default=None, repr=False)
     headers: dict[str, str] | None = Field(default=None, repr=False)
     enabled: bool = True
     timeout_seconds: float = Field(default=30.0, gt=0)
+    retry: MCPRetryConfig = Field(default_factory=MCPRetryConfig)
     metadata: dict = Field(default_factory=dict)
 
     @field_validator("server_id")

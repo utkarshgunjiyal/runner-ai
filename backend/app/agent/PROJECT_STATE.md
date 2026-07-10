@@ -75,8 +75,8 @@ config-free and unit-testable without a database or credentials.
 | Field | Value |
 |---|---|
 | **Branch** | `v2-autonomous-platform` |
-| **Latest commit** | `V2 Phase 40: Unified Tool Registry & Capability Platform` |
-| **Test count** | **614 passing** (`569` under `tests/agent`, `45` under `tests/api`) |
+| **Latest commit** | `V2 Phase 41A: Production MCP Transport & Capability Lifecycle` |
+| **Test count** | **643 passing** (`598` under `tests/agent`, `45` under `tests/api`) |
 | **Python** | 3.11 (developed on 3.11.15) |
 | **Test command** | `cd backend && python -m pytest` |
 
@@ -353,6 +353,28 @@ ids stay **flat and stable** (`search_documents` …, the legacy `internal`
 namespace) while new sources use dotted namespaces; the default runtime (internal
 only) is byte-identical, and adding MCP is composition-only.
 
+### Phase 41A — Production MCP Transport & Capability Lifecycle
+A real transport layer *beneath* the unchanged `MCPClient` Protocol. `MCPTransport`
+(`mcp/transport.py`) is one live session to a server (`connect/list_tools/
+call_tool/health/close`), with a `ServerHealth` state machine (healthy → degraded →
+offline; `last_success`/`last_failure`/`last_ping`). Two concrete transports
+(`mcp/transports/{stdio,http}.py`) speak genuine **JSON-RPC 2.0** —
+`StdioTransport` over an asyncio subprocess (newline-delimited), `StreamableHTTPTransport`
+over httpx — with **no vendor MCP SDK** and an injectable I/O channel so the real
+protocol path is tested without a live server. `MCPConnectionManager`
+(`mcp/connection.py`) pools one transport per server (lazy connect, session reuse,
+bounded-retry reconnect, idle recycle, graceful shutdown, health/stats); a
+`TransportMCPClient` implements the existing `MCPClient` Protocol over it — the
+swap-in for `FakeMCPClient`. Transport errors (`Transport{Unavailable,Timeout,
+ProtocolError,AuthenticationError,ConnectionLost,Busy}`) subclass `MCPError`, so
+`MCPAdapter` maps them to `AdapterResult` unchanged. `mcp/composition.py` +
+`main.py` (feature-flagged `agent_mcp_enabled`, default off) build the stack from
+**trusted** configs and own the connection lifecycle. **Decision:** the runtime,
+planner, retriever, evaluation, repair, `MCPRegistryManager`, and `MCPAdapter` are
+**transport-agnostic** — transport lives entirely below `MCPClient`; route handlers
+are unchanged; secrets/`working_directory` never enter `ToolSpec` or observability;
+the default runtime stays internal-only and byte-identical.
+
 ---
 
 ## Runtime Pipeline
@@ -553,6 +575,19 @@ Locations are under `backend/app/agent/`.
   executor}` map the factory turns into the Execution Bridge — the planner,
   retriever, and orchestrator never see a capability's origin.
 
+### MCP Transport — `mcp/transport.py`, `mcp/transports/{stdio,http}.py`, `mcp/connection.py`, `mcp/composition.py`
+- **Responsibility:** the production transport layer beneath the `MCPClient`
+  Protocol. `MCPTransport` = one server session + health; `StdioTransport` /
+  `StreamableHTTPTransport` = real JSON-RPC (subprocess / httpx, no SDK);
+  `MCPConnectionManager` = pooling, lazy connect, reuse, reconnect, idle recycle,
+  shutdown, health/stats; `TransportMCPClient` = the `MCPClient` implementation
+  over the manager (swap-in for `FakeMCPClient`).
+- **Dependencies:** stdlib `asyncio` + `httpx`; trusted `MCPServerConfig`s;
+  injectable clock/sleep/channel (deterministic tests). No LLM/DB/settings.
+- **Outputs:** connected transport sessions, per-server `ServerHealth`
+  snapshots + connection stats, and transport errors that map to `AdapterResult`
+  — no raw transport/SDK detail or secrets ever escape.
+
 ---
 
 ## API Surface
@@ -738,6 +773,14 @@ reason — most of the codebase relies on them.
     Bridge; the planner never knows a capability is internal/API/MCP; no vendor
     MCP SDK is imported in `app.agent`; MCP server config is trusted-only and
     secrets never enter a `ToolSpec` or `RuntimeEvent`.
+19. **The runtime is transport-agnostic.** MCP transport (stdio / streamable HTTP)
+    lives entirely *below* the `MCPClient` Protocol, behind `MCPTransport` +
+    `MCPConnectionManager`. The runtime, planner, retriever, evaluation, repair,
+    `MCPRegistryManager`, and `MCPAdapter` never learn which transport is used;
+    swapping `FakeMCPClient` for `TransportMCPClient` changes nothing above. No
+    vendor MCP SDK is imported anywhere in `app.agent`; connection lifecycle is
+    owned by the composition root; secrets and `working_directory` never enter a
+    `ToolSpec`, `RuntimeEvent`, or health/observability snapshot.
 18. **One unified capability platform.** Every capability origin is a
     `CapabilitySource` mounted into the `UnifiedCapabilityRegistry`; the planner,
     retriever, execution bridge, evaluator, repair, and orchestrator only ever
@@ -754,26 +797,26 @@ reason — most of the codebase relies on them.
 |---|---|---|
 | **Phase 39 ✅** | **MCP Integration Foundation** | *Done.* MCP servers are represented via trusted config; tools discovered through an injected `MCPClient` become normalized `ToolSpec` capabilities that participate in the existing hybrid retrieval and execute through the Execution Bridge into `AdapterResult`s. Planner/orchestrator stay MCP-agnostic. Fake client + one transport abstraction only (no live server, no SDK). |
 | **Phase 40 ✅** | **Unified Tool Registry & Capability Platform** | *Done.* `CapabilitySource` + `UnifiedCapabilityRegistry`: internal / MCP / future sources mount into one shared registry (namespaces, ownership, atomic refresh, lifecycle); retrieval and the execution bridge are unchanged; the factory composes sources. Planner is unaware of origin; default runtime unchanged. |
-| **Phase 41** | **Frontend + HITL** | A UI over the streaming API and the `WAITING_*` outcomes: render live token streams, surface pending approvals/clarifications, and drive `/agent/resume`. Also: real MCP transport (stdio / streamable_http) behind the `MCPClient` Protocol once an MCP dependency is added, mounting the capability platform in `main.py` lifespan, and per-capability enable/permission policy. |
+| **Phase 41A ✅** | **Production MCP Transport & Capability Lifecycle** | *Done.* Real JSON-RPC transports (`StdioTransport`, `StreamableHTTPTransport`, no SDK) behind an `MCPTransport` abstraction; `MCPConnectionManager` (pool/lazy/reuse/reconnect/idle/shutdown/health); `TransportMCPClient` swap-in for `FakeMCPClient`; transport error taxonomy → `AdapterResult`; composition root owns the connection lifecycle (feature-flagged, default off). Runtime/planner/retrieval/execution unchanged. |
+| **Phase 41B** | **Frontend + HITL** | A UI over the streaming API and the `WAITING_*` outcomes: render live token streams, surface pending approvals/clarifications, and drive `/agent/resume`. Plus per-capability enable/permission policy for MCP tools, and SSE (server→client streaming) on the HTTP transport. |
 | **Phase 42** | **Production hardening** | Streaming transport hardening (keep-alive, client-disconnect cancellation), observability/metrics, rate limiting, load/soak testing, and deployment/runbook polish. |
 
-**Phase 39 current limitations (intentional scope boundary).** Only the transport
-*abstraction* + `FakeMCPClient` ship — there is **no real stdio/streamable_http
-client yet** (no MCP SDK is installed), so nothing connects to a live server. MCP
-composition is wired in the factory seam but **not yet mounted in `main.py`
-lifespan** (no configured servers, no admin endpoint — deliberately, since server
-registration must be trusted-only). Per-capability enable/permission policy for
-MCP tools and a real transport are Phase 40. `next recommended phase` → **Phase 40
-— Unified Tool Registry** (real MCP transport behind the same `MCPClient`
-Protocol + one capability namespace + policy).
+**Phase 41A current limitations (intentional scope boundary).** Real transports
+ship, but no MCP dependency/live server is required: `agent_mcp_enabled` defaults
+**off** and `load_trusted_mcp_server_configs()` returns `[]`, so production runs
+internal-only until real deployments populate trusted configs. The HTTP transport
+handles JSON (and a single SSE `data:` frame) request/response — **long-lived
+server→client SSE streaming is deferred to 41B**. Per-capability enable/permission
+policy for MCP tools is also 41B. `next recommended phase` → **Phase 41B — Frontend
++ HITL** (UI over streaming + `WAITING_*`, MCP capability policy, HTTP SSE).
 
 ---
 
 ## Test Status
 
-- **Current:** **614 passing** (1 benign Starlette deprecation warning),
+- **Current:** **643 passing** (1 benign Starlette deprecation warning),
   `python -m pytest`, ~2–3s.
-  - `tests/agent/` — **569** (unit tests for every runtime stage; config-free,
+  - `tests/agent/` — **598** (unit tests for every runtime stage; config-free,
     fakes + `asyncio.run`).
   - `tests/api/` — **45** (FastAPI `TestClient` over the routers with injected
     fakes; no DB/LLM).
@@ -803,6 +846,8 @@ Protocol + one capability namespace + policy).
   `test_mcp_integration`.
 - **Capability platform (Phase 40):** `test_unified_registry`,
   `test_capability_sources`.
+- **MCP transport (Phase 41A):** `test_mcp_transport`, `test_mcp_connection`,
+  `test_mcp_transport_integration`.
 - **API:** `test_agent_run`, `test_agent_resume`, `test_agent_stream`,
   `test_checkpoint_wiring`, `test_runtime_provider_wiring`,
   `test_provider_failure_api`.
@@ -825,7 +870,8 @@ app/
     execution/               ← executor, shared state, adapter runner, capability_executor (Execution Bridge)
     gate/                    ← BehaviorGate (direct vs planner)
     llm/                     ← provider boundary: final_provider, planner_provider, provider_adapter
-    mcp/                     ← MCP boundary: models, errors, client (Protocol + FakeMCPClient), registry manager
+    mcp/                     ← MCP boundary: models, errors, client (Protocol + FakeMCPClient), registry manager,
+                               transport + transports/{stdio,http} + connection manager + composition (Phase 41A)
     models/                  ← typed models: tool_spec, plan, final_prompt, planner_prompt, policy…
     optimization/            ← plan optimizer (execution groups)
     policy/                  ← policy engine (annotate-only)

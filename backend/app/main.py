@@ -54,17 +54,53 @@ async def lifespan(app: FastAPI):
     configure_checkpoint_store(store)
     logger.info("app.checkpoint_backend_ready", extra={"backend": settings.agent_checkpoint_backend})
 
+    # Agent MCP transport (Phase 41A). Composition root owns the connection
+    # lifecycle: it builds the connection manager + transport client, registers
+    # and discovers TRUSTED server configs, and passes the pre-discovered manager
+    # to the runtime. Default off (no servers) → the runtime is internal-only and
+    # byte-identical. Route handlers are unchanged.
+    mcp_connection_manager = None
+    mcp_registry_manager = None
+    if settings.agent_mcp_enabled:
+        from app.agent.mcp.composition import build_mcp_registry_manager
+
+        server_configs = load_trusted_mcp_server_configs()
+        if server_configs:
+            mcp_registry_manager, mcp_connection_manager = await build_mcp_registry_manager(
+                server_configs
+            )
+            logger.info(
+                "app.mcp_ready",
+                extra={"servers": [c.public_metadata() for c in server_configs]},
+            )
+
     # Agent LLM providers (Phase 37). Composition root selects deterministic vs
     # real V1.5-backed providers; routes stay config-free. One shared orchestrator.
-    configure_agent_runtime(use_real_llm=settings.agent_use_real_llm)
+    configure_agent_runtime(
+        use_real_llm=settings.agent_use_real_llm,
+        mcp_registry_manager=mcp_registry_manager,
+    )
     logger.info("app.agent_llm_ready", extra={"use_real_llm": settings.agent_use_real_llm})
 
     yield
 
+    if mcp_connection_manager is not None:
+        await mcp_connection_manager.shutdown()  # graceful transport close (owned here)
     if checkpoint_mongo_client is not None:
         checkpoint_mongo_client.close()  # owned here; distinct from the Motor client
     client.close()
     logger.info("app.shutdown")
+
+
+def load_trusted_mcp_server_configs():
+    """Trusted MCP server configuration seam (Phase 41A).
+
+    Returns the list of ``MCPServerConfig`` the composition root should mount.
+    Empty by default — real deployments populate this from trusted configuration
+    only (never from user request input). Kept as an explicit function so server
+    registration stays out of route handlers and out of untrusted paths.
+    """
+    return []
 
 
 app = FastAPI(

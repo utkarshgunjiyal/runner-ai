@@ -44,6 +44,14 @@ _ERROR_CODE_MAP = {
     "mcp_tool_invocation_error": ErrorCode.UPSTREAM_ERROR,
     "mcp_protocol_error": ErrorCode.UPSTREAM_ERROR,
     "mcp_error": ErrorCode.UPSTREAM_ERROR,
+    # Transport-layer (Phase 41A) — mapped onto the same recovery taxonomy.
+    "mcp_transport_error": ErrorCode.UPSTREAM_ERROR,
+    "mcp_transport_unavailable": ErrorCode.UPSTREAM_UNAVAILABLE,
+    "mcp_transport_timeout": ErrorCode.UPSTREAM_TIMEOUT,
+    "mcp_transport_protocol_error": ErrorCode.UPSTREAM_ERROR,
+    "mcp_transport_auth_error": ErrorCode.UPSTREAM_UNAVAILABLE,
+    "mcp_transport_connection_lost": ErrorCode.UPSTREAM_UNAVAILABLE,
+    "mcp_transport_busy": ErrorCode.UPSTREAM_UNAVAILABLE,
 }
 
 

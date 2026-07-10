@@ -75,22 +75,28 @@ _orchestrator = None
 _checkpoint_store = None
 _coordinator: AsyncResumeCoordinator | None = None
 _use_real_llm = False
+_mcp_registry_manager = None
 
 
 def _get_orchestrator():
     global _orchestrator
     if _orchestrator is None:
-        _orchestrator = build_default_runtime(use_real_llm=_use_real_llm)
+        _orchestrator = build_default_runtime(
+            use_real_llm=_use_real_llm, mcp_registry_manager=_mcp_registry_manager
+        )
     return _orchestrator
 
 
-def configure_agent_runtime(*, use_real_llm: bool = False) -> None:
-    """Composition-root hook: select the LLM provider mode before the shared
-    orchestrator is first built. Providers are built once and shared across
-    /agent/run, /agent/resume and /agent/run/stream. Routes never read config."""
-    global _use_real_llm, _orchestrator, _coordinator
+def configure_agent_runtime(*, use_real_llm: bool = False, mcp_registry_manager=None) -> None:
+    """Composition-root hook: select the LLM provider mode (and optionally a
+    pre-discovered MCP registry manager) before the shared orchestrator is first
+    built. Providers/capabilities are built once and shared across /agent/run,
+    /agent/resume and /agent/run/stream. Routes never read config; the MCP manager
+    is composed and its transport lifecycle owned by the composition root."""
+    global _use_real_llm, _mcp_registry_manager, _orchestrator, _coordinator
     _use_real_llm = bool(use_real_llm)
-    _orchestrator = None  # rebuild with the selected providers on next use
+    _mcp_registry_manager = mcp_registry_manager
+    _orchestrator = None  # rebuild with the selected providers/capabilities on next use
     _coordinator = None
 
 

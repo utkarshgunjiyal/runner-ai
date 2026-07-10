@@ -78,3 +78,68 @@ class MCPProtocolError(MCPError):
     error_code = "mcp_protocol_error"
     retryable = False
     safe_message = "The MCP server returned an unexpected response."
+
+
+# --------------------------------------------------------------------------- #
+# Transport-layer errors (Phase 41A)
+#
+# Raised by concrete transports (stdio / streamable_http) and the connection
+# manager. They subclass ``MCPError`` so the existing ``MCPAdapter`` maps them to
+# an ``AdapterResult`` with no change — raw transport/SDK exceptions are wrapped
+# here and never leak upward.
+# --------------------------------------------------------------------------- #
+
+class TransportError(MCPError):
+    """Base for transport-layer failures."""
+
+    error_code = "mcp_transport_error"
+    retryable = False
+    safe_message = "The MCP transport failed."
+
+
+class TransportUnavailable(TransportError):
+    """The transport could not be established (spawn/connect failed)."""
+
+    error_code = "mcp_transport_unavailable"
+    retryable = True
+    safe_message = "The MCP server is temporarily unavailable."
+
+
+class TransportTimeout(TransportError):
+    """A transport operation exceeded its deadline."""
+
+    error_code = "mcp_transport_timeout"
+    retryable = True
+    safe_message = "The MCP request timed out."
+
+
+class TransportProtocolError(TransportError):
+    """Malformed transport framing / invalid JSON-RPC message."""
+
+    error_code = "mcp_transport_protocol_error"
+    retryable = False
+    safe_message = "The MCP server returned an unexpected response."
+
+
+class TransportAuthenticationError(TransportError):
+    """The transport was rejected for auth reasons (won't fix on retry)."""
+
+    error_code = "mcp_transport_auth_error"
+    retryable = False
+    safe_message = "The MCP server rejected the connection."
+
+
+class TransportConnectionLost(TransportError):
+    """An established session dropped mid-operation."""
+
+    error_code = "mcp_transport_connection_lost"
+    retryable = True
+    safe_message = "The MCP connection was lost."
+
+
+class TransportBusy(TransportError):
+    """The transport is at capacity / a concurrent op is in flight."""
+
+    error_code = "mcp_transport_busy"
+    retryable = True
+    safe_message = "The MCP server is busy; please retry."

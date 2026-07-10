@@ -896,3 +896,69 @@ never removes working capabilities or leaves partial/corrupt state.
 rolls back another). `shutdown()` closes every source (best-effort). Ownership of
 the platform lifecycle belongs to the composition root (the factory builds it;
 `main.py` will own `shutdown` when MCP is mounted in production).
+
+---
+
+## 28. Production MCP Transport & Capability Lifecycle (Phase 41A)
+
+Phase 39 gave MCP an SDK-agnostic `MCPClient` Protocol; Phase 41A puts a **real
+transport layer beneath it** while keeping everything above transport-agnostic.
+The runtime, planner, retriever, evaluation, repair, `MCPRegistryManager`, and
+`MCPAdapter` never learn which transport is used — swapping the client changes
+nothing above.
+
+```
+Capability Source → Unified Capability Registry → Execution Bridge → MCPAdapter
+  → MCPClient Protocol           (unchanged; the seam)
+    → TransportMCPClient         (mcp/connection.py — implements MCPClient)
+      → MCPConnectionManager     (pool / lazy / reuse / reconnect / idle / health)
+        → MCPTransport           (one live server session)
+          → StdioTransport | StreamableHTTPTransport   (real JSON-RPC 2.0, no SDK)
+            → MCP Server
+```
+
+### 28.1 Transport architecture
+`MCPTransport` (`mcp/transport.py`) is one live session to a single server:
+`connect / disconnect / list_tools / call_tool / health / close`. Concrete
+transports implement genuine **JSON-RPC 2.0** (`initialize` →
+`notifications/initialized` → `tools/list` → `tools/call`) over a channel, with
+**no vendor MCP SDK**:
+- `StdioTransport` — a child process over asyncio, newline-delimited JSON on
+  stdin/stdout; the subprocess `spawn` is injectable.
+- `StreamableHTTPTransport` — JSON-RPC over `httpx` POST, capturing the
+  `Mcp-Session-Id`; the `post` primitive is injectable. (Long-lived server→client
+  SSE streaming is deferred to 41B.)
+
+Because the raw I/O channel is injected, the real protocol path is exercised
+deterministically in tests with no live server. `FakeTransport` implements
+`MCPTransport` directly for connection/lifecycle/health tests.
+
+### 28.2 Connection ownership & lifecycle
+`MCPConnectionManager` (`mcp/connection.py`) owns transport sessions: **one
+pooled transport per server** (never per request), lazy connect, session reuse,
+bounded-retry reconnect (per-server `MCPRetryConfig`, injectable sleep), idle
+recycle (injectable clock), graceful `shutdown`, and in-memory stats
+(connections, active sessions, reuses, failed reconnects, connect latency).
+`TransportMCPClient` implements the unchanged `MCPClient` Protocol over it — the
+swap-in for `FakeMCPClient`. The **composition root** (`app/main.py`, feature-
+flagged `agent_mcp_enabled`, default off) builds the stack from *trusted* configs
+via `mcp/composition.py`, passes the pre-discovered `MCPRegistryManager` to the
+runtime through the existing `configure_agent_runtime` hook, and owns
+`connection_manager.shutdown()` at teardown. Route handlers are unchanged.
+
+### 28.3 Health model
+Each server has a `ServerHealth` state machine: **healthy → degraded → offline**
+by consecutive-failure thresholds, with `last_success` / `last_failure` /
+`last_ping`. `snapshot()` exposes only these safe fields — never transport
+internals (pipes, sockets, headers, env). The connection manager aggregates
+health and stats for the composition root to log.
+
+### 28.4 Failure handling & security
+Transport failures raise `Transport{Unavailable, Timeout, ProtocolError,
+AuthenticationError, ConnectionLost, Busy}` — subclasses of `MCPError` carrying
+`error_code` / `retryable` / a safe message. `MCPAdapter` maps them to
+`AdapterResult` with **no change** (timeouts/connection-lost retryable; auth /
+protocol not), and **raw transport/SDK exception text never escapes**. Server
+configuration is trusted-only (never user input); `MCPServerConfig` adds
+`working_directory` and `retry`, and — like `headers`/`environment` — these never
+enter a `ToolSpec`, a `RuntimeEvent`, or a health/observability snapshot.

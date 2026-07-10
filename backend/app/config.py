@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     # llm_provider/llm_model settings above. No second LLM config system.
     agent_use_real_llm: bool = False
 
+    # -- Agent MCP transport (Phase 41A) -------------------------------------
+    # False (default) = no MCP servers; the runtime is internal-only and
+    # byte-identical. When True, the composition root builds the connection
+    # manager + transport client and mounts trusted MCP server configs. Server
+    # configuration comes from trusted composition only (never user input).
+    agent_mcp_enabled: bool = False
+
     @field_validator("agent_checkpoint_backend")
     @classmethod
     def _validate_checkpoint_backend(cls, value: str) -> str:
