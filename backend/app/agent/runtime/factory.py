@@ -21,6 +21,8 @@ from app.agent.context.final_builder import FinalContextBuilder
 from app.agent.gate.behavior_gate import BehaviorGate
 from app.agent.capabilities.keyword_retriever import KeywordCapabilityRetriever
 from app.agent.llm.final_provider import DeterministicFinalProvider, FinalAnswerProvider
+from app.agent.llm.planner_provider import DeterministicPlannerProvider, V15PlannerProvider
+from app.agent.llm.provider_adapter import V15FinalAnswerProvider
 from app.agent.models.tool_spec import ToolSpec
 from app.agent.registry.loader import get_default_tool_registry
 from app.agent.registry.registry import ToolRegistry
@@ -85,7 +87,10 @@ def build_default_runtime(
     tool_registry: ToolRegistry | None = None,
     capability_executor=None,
     final_provider: FinalAnswerProvider | None = None,
+    final_answer_provider: FinalAnswerProvider | None = None,
+    planner_provider=None,
     plan_source=None,
+    use_real_llm: bool = False,
     top_k: int = 5,
     embedding=None,
     reranker=None,
@@ -114,13 +119,27 @@ def build_default_runtime(
     direct_runtime = DirectRuntime(retriever, executor, top_k=top_k)
     planner_runtime = PlannerRuntime(direct_runtime, retriever, top_k=top_k)
 
+    # Providers: deterministic by default (config-free, credential-free); the
+    # real V1.5-backed adapters are selected by use_real_llm or explicit
+    # injection. Providers are built once here and shared (never per request).
+    final_answer = (
+        final_answer_provider
+        or final_provider
+        or (V15FinalAnswerProvider() if use_real_llm else DeterministicFinalProvider())
+    )
+    planner = planner_provider or (
+        V15PlannerProvider() if use_real_llm else DeterministicPlannerProvider()
+    )
+
     return AgentOrchestrator(
         context_engine=engine,
         behavior_gate=BehaviorGate(),
         direct_runtime=direct_runtime,
         planner_runtime=planner_runtime,
         final_context_builder=FinalContextBuilder(hybrid_pipeline=final_hybrid_pipeline),
-        final_provider=final_provider or DeterministicFinalProvider(),
+        final_provider=final_answer,
+        planner_provider=planner,
+        capability_retriever=retriever,
         plan_source=plan_source,
     )
 

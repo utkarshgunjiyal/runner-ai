@@ -120,6 +120,9 @@ class AgentOrchestrator:
         final_context_builder: FinalContextBuilderLike,
         final_provider: FinalAnswerProvider,
         plan_source: PlanSource | None = None,
+        planner_provider=None,
+        capability_retriever=None,
+        planner_top_k: int = 8,
         answer_evaluator: AnswerEvaluatorLike | None = None,
         repair_runtime: RepairRuntimeLike | None = None,
         max_repair_rounds: int = 1,
@@ -131,6 +134,12 @@ class AgentOrchestrator:
         self._final_context_builder = final_context_builder
         self._final_provider = final_provider
         self._plan_source = plan_source
+        # Phase 36: on the PLANNER path, request a typed ExecutionPlan from an
+        # injected PlannerProvider (built from top-k capabilities), falling back
+        # to the static plan_source. DIRECT never touches either.
+        self._planner_provider = planner_provider
+        self._capability_retriever = capability_retriever
+        self._planner_top_k = planner_top_k
         self._answer_evaluator = answer_evaluator
         # A repair runtime is only needed when evaluation is enabled.
         self._repair_runtime = repair_runtime or (
@@ -264,14 +273,28 @@ class AgentOrchestrator:
         return final_prompt, answer, report, records, terminal_repair
 
     async def _resolve_plan(self, run_context: RunContext) -> ExecutionPlan:
+        # Prefer the typed PlannerProvider (Phase 36); fall back to plan_source.
+        if self._planner_provider is not None:
+            prompt = self._build_planner_prompt(run_context)
+            return await self._planner_provider.plan(prompt)
         if self._plan_source is None:
             raise MissingPlanSourceError(
-                "PLANNER path requires an injected plan_source"
+                "PLANNER path requires an injected planner_provider or plan_source"
             )
         plan = self._plan_source(run_context)
         if inspect.isawaitable(plan):
             plan = await plan
         return plan
+
+    def _build_planner_prompt(self, run_context: RunContext):
+        from app.agent.models.planner_prompt import build_planner_prompt
+
+        matches = []
+        if self._capability_retriever is not None:
+            matches = self._capability_retriever.retrieve_for_run_context(
+                run_context, top_k=self._planner_top_k
+            ).matches
+        return build_planner_prompt(run_context, matches)
 
     # -- Resume continuation (Phase 26) --------------------------------------
 
