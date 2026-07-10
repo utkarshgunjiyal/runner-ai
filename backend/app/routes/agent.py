@@ -127,8 +127,13 @@ def get_resume_coordinator() -> AsyncResumeCoordinator:
 
 
 def get_runtime_streamer() -> RuntimeStreamer:
-    # Wraps the same orchestrator used by /agent/run — transport only.
-    return RuntimeStreamer(_get_orchestrator())
+    # Wraps the same orchestrator used by /agent/run — transport only. The
+    # checkpointer is the shared coordinator's persistence step, so a streamed
+    # WAITING_* run is checkpointed in the SAME store /agent/resume reads and the
+    # terminal event carries a resumable checkpoint_id (Phase 41B).
+    return RuntimeStreamer(
+        _get_orchestrator(), checkpointer=get_resume_coordinator().checkpoint_result
+    )
 
 
 def _to_response(coord_result) -> AgentRunResponse:

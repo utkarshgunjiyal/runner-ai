@@ -28,6 +28,14 @@ from app.agent.runtime.outcome import RuntimeOutcome
 
 _SENTINEL = object()
 
+# Waiting outcomes are the resumable ones (checkpointed for /agent/resume).
+_WAITING_OUTCOMES = {
+    RuntimeOutcome.WAITING_FOR_CONTEXT,
+    RuntimeOutcome.WAITING_FOR_USER,
+    RuntimeOutcome.WAITING_FOR_APPROVAL,
+    RuntimeOutcome.WAITING_FOR_REPLAN,
+}
+
 
 class _Sequencer:
     def __init__(self) -> None:
@@ -40,8 +48,14 @@ class _Sequencer:
 
 
 class RuntimeStreamer:
-    def __init__(self, orchestrator) -> None:
+    def __init__(self, orchestrator, *, checkpointer=None) -> None:
         self._orchestrator = orchestrator
+        # Phase 41B: optional persistence for WAITING_* outcomes. An async
+        # ``(AgentRunResult) -> checkpoint_id | None`` (the ResumeCoordinator's
+        # checkpoint step) so a *streamed* waiting run is resumable via
+        # /agent/resume — the terminal event then carries ``checkpoint_id``. When
+        # None (default), the stream is byte-identical to Phase 38.
+        self._checkpointer = checkpointer
 
     async def run_stream(
         self,
@@ -114,6 +128,16 @@ class RuntimeStreamer:
             )
             return
 
+        # For a WAITING_* outcome, persist a checkpoint (if a checkpointer is
+        # wired) so the run is resumable, and surface the id in the terminal event.
+        # Best-effort: a persistence failure must not break the stream.
+        checkpoint_id = None
+        if self._checkpointer is not None and result.runtime_outcome in _WAITING_OUTCOMES:
+            try:
+                checkpoint_id = await self._checkpointer(result)
+            except Exception:  # noqa: BLE001 - never let persistence break the stream
+                checkpoint_id = None
+
         yield seq.make(
             E.RUNTIME_COMPLETED,
             run_id=result.run_id,
@@ -121,5 +145,6 @@ class RuntimeStreamer:
                 "runtime_outcome": result.runtime_outcome.value,
                 "pending_action": result.pending_action,
                 "pending_reason": result.pending_reason,
+                "checkpoint_id": checkpoint_id,
             },
         )

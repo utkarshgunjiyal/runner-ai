@@ -75,8 +75,8 @@ config-free and unit-testable without a database or credentials.
 | Field | Value |
 |---|---|
 | **Branch** | `v2-autonomous-platform` |
-| **Latest commit** | `V2 Phase 41A: Production MCP Transport & Capability Lifecycle` |
-| **Test count** | **643 passing** (`598` under `tests/agent`, `45` under `tests/api`) |
+| **Latest commit** | `V2 Phase 41B: Frontend + Human-in-the-Loop` |
+| **Test count** | **650 backend** (`600` `tests/agent`, `50` `tests/api`) + **30 frontend** (Vitest) |
 | **Python** | 3.11 (developed on 3.11.15) |
 | **Test command** | `cd backend && python -m pytest` |
 
@@ -374,6 +374,27 @@ planner, retriever, evaluation, repair, `MCPRegistryManager`, and `MCPAdapter` a
 **transport-agnostic** — transport lives entirely below `MCPClient`; route handlers
 are unchanged; secrets/`working_directory` never enter `ToolSpec` or observability;
 the default runtime stays internal-only and byte-identical.
+
+### Phase 41B — Frontend + Human-in-the-Loop
+A new `frontend/` (React + TypeScript + Vite + Vitest) makes Runner.ai usable and
+demo-ready: conversational requests, **true token streaming**, a safe collapsible
+runtime timeline, and full HITL (clarification / approval / rejection / deferred
+waits) with checkpoint-based resume. The UI is transport + presentation only — no
+business logic. A **POST-SSE client** (`fetch`→`ReadableStream`, since `EventSource`
+can't POST) parses frames robustly (partial/multi-frame chunks, malformed JSON
+skipped, ordering, abort). An explicit **run state machine** (`state/runReducer`)
+turns `RuntimeEvent`s into transitions; only **safe metadata** is rendered (never
+prompts/secrets/headers/internal state). Auth uses HTTP-only cookies
+(`credentials: "include"`, no `localStorage` tokens). **One additive backend
+change** was required and made: the streaming path bypassed the ResumeCoordinator,
+so a streamed `WAITING_*` run had no `checkpoint_id` to resume with —
+`RuntimeStreamer` now takes an optional `checkpointer` (wired to the shared
+coordinator's persistence), so the terminal event carries a resumable
+`checkpoint_id`; default (no checkpointer) is byte-identical to Phase 38, routes
+stay transport-only, and it is covered by backend tests. **Decision:** the
+frontend never redesigns the runtime, moves logic into React, exposes internals,
+stores tokens in `localStorage`, uses WebSockets/polling, or fakes resume
+streaming; resume stays JSON with a loading state.
 
 ---
 
@@ -788,6 +809,14 @@ reason — most of the codebase relies on them.
     ownership + prefix (a source can never touch another's ids); refresh is
     atomic (old capabilities stay active until a validated replacement commits);
     internal ids remain flat and stable. Adding a source is composition-only.
+20. **The frontend is transport + presentation only.** The `frontend/` SPA renders
+    `RuntimeEvent`s and drives `/agent/resume`; it holds no runtime, planning, or
+    business logic, exposes no runtime internals (safe metadata only), stores no
+    auth tokens in `localStorage` (HTTP-only cookies, `credentials: "include"`),
+    uses SSE-over-`fetch` (no WebSockets, no polling), and never fakes resume
+    streaming. Streamed `WAITING_*` runs are resumable because the terminal
+    `runtime_completed` event carries a `checkpoint_id` (the streamer's optional
+    checkpointer; default off = byte-identical to Phase 38).
 
 ---
 
@@ -798,7 +827,7 @@ reason — most of the codebase relies on them.
 | **Phase 39 ✅** | **MCP Integration Foundation** | *Done.* MCP servers are represented via trusted config; tools discovered through an injected `MCPClient` become normalized `ToolSpec` capabilities that participate in the existing hybrid retrieval and execute through the Execution Bridge into `AdapterResult`s. Planner/orchestrator stay MCP-agnostic. Fake client + one transport abstraction only (no live server, no SDK). |
 | **Phase 40 ✅** | **Unified Tool Registry & Capability Platform** | *Done.* `CapabilitySource` + `UnifiedCapabilityRegistry`: internal / MCP / future sources mount into one shared registry (namespaces, ownership, atomic refresh, lifecycle); retrieval and the execution bridge are unchanged; the factory composes sources. Planner is unaware of origin; default runtime unchanged. |
 | **Phase 41A ✅** | **Production MCP Transport & Capability Lifecycle** | *Done.* Real JSON-RPC transports (`StdioTransport`, `StreamableHTTPTransport`, no SDK) behind an `MCPTransport` abstraction; `MCPConnectionManager` (pool/lazy/reuse/reconnect/idle/shutdown/health); `TransportMCPClient` swap-in for `FakeMCPClient`; transport error taxonomy → `AdapterResult`; composition root owns the connection lifecycle (feature-flagged, default off). Runtime/planner/retrieval/execution unchanged. |
-| **Phase 41B** | **Frontend + HITL** | A UI over the streaming API and the `WAITING_*` outcomes: render live token streams, surface pending approvals/clarifications, and drive `/agent/resume`. Plus per-capability enable/permission policy for MCP tools, and SSE (server→client streaming) on the HTTP transport. |
+| **Phase 41B ✅** | **Frontend + Human-in-the-Loop** | *Done.* React + TS + Vite SPA: streaming answer, safe runtime timeline, HITL (clarification/approval/rejection/deferred) with checkpoint resume, cookie auth, 30 Vitest tests. One additive backend change: streamed `WAITING_*` runs now carry a resumable `checkpoint_id`. |
 | **Phase 42** | **Production hardening** | Streaming transport hardening (keep-alive, client-disconnect cancellation), observability/metrics, rate limiting, load/soak testing, and deployment/runbook polish. |
 
 **Phase 41A current limitations (intentional scope boundary).** Real transports
@@ -806,20 +835,30 @@ ship, but no MCP dependency/live server is required: `agent_mcp_enabled` default
 **off** and `load_trusted_mcp_server_configs()` returns `[]`, so production runs
 internal-only until real deployments populate trusted configs. The HTTP transport
 handles JSON (and a single SSE `data:` frame) request/response — **long-lived
-server→client SSE streaming is deferred to 41B**. Per-capability enable/permission
-policy for MCP tools is also 41B. `next recommended phase` → **Phase 41B — Frontend
-+ HITL** (UI over streaming + `WAITING_*`, MCP capability policy, HTTP SSE).
+server→client SSE streaming. Per-capability enable/permission policy for MCP tools
+was also deferred. Both remain **deferred to Phase 42** (production hardening).
+
+**Phase 41B current limitations (intentional scope boundary).** The frontend runs
+against the existing dev-user auth stub — no login screen ships (cookie auth wiring
+is a deployment concern); it degrades safely on 401. `WAITING_FOR_CONTEXT` /
+`WAITING_FOR_REPLAN` render an honest deferred state and offer **no** resume action
+(the backend's continuation for those is deferred, not fabricated). The default
+frontend test suite mocks `fetch`/`ReadableStream` — no live backend. `next
+recommended phase` → **Phase 42 — Production hardening**.
 
 ---
 
 ## Test Status
 
-- **Current:** **643 passing** (1 benign Starlette deprecation warning),
-  `python -m pytest`, ~2–3s.
-  - `tests/agent/` — **598** (unit tests for every runtime stage; config-free,
+- **Backend:** **650 passing** (1 benign Starlette deprecation warning),
+  `cd backend && python -m pytest`, ~2–3s.
+  - `tests/agent/` — **600** (unit tests for every runtime stage; config-free,
     fakes + `asyncio.run`).
-  - `tests/api/` — **45** (FastAPI `TestClient` over the routers with injected
+  - `tests/api/` — **50** (FastAPI `TestClient` over the routers with injected
     fakes; no DB/LLM).
+- **Frontend:** **30 passing** (Vitest + jsdom, mocked fetch/streams),
+  `cd frontend && npm test`. Also `npm run typecheck`, `npm run lint`,
+  `npm run build` all green.
 
 ### Major test categories
 - **Models & registries:** `test_tool_registry`, `test_plan_models`,
@@ -849,8 +888,13 @@ policy for MCP tools is also 41B. `next recommended phase` → **Phase 41B — F
 - **MCP transport (Phase 41A):** `test_mcp_transport`, `test_mcp_connection`,
   `test_mcp_transport_integration`.
 - **API:** `test_agent_run`, `test_agent_resume`, `test_agent_stream`,
-  `test_checkpoint_wiring`, `test_runtime_provider_wiring`,
-  `test_provider_failure_api`.
+  `test_agent_stream_resume`, `test_checkpoint_wiring`,
+  `test_runtime_provider_wiring`, `test_provider_failure_api`.
+- **Streamed HITL (Phase 41B):** `test_streaming_checkpoint` (unit),
+  `test_agent_stream_resume` (streamed WAITING_* → resume end-to-end).
+- **Frontend (Phase 41B, Vitest):** `sseClient.test` (POST-SSE parsing),
+  `runReducer.test` (state machine + safe timeline), `hitl.test` (HITL panels),
+  `useAgentRun.test` (submit → stream → waiting → resume, duplicate-resume guard).
 
 ---
 

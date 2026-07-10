@@ -121,6 +121,15 @@ class AsyncResumeCoordinator:
     def store(self):
         return self._store
 
+    async def checkpoint_result(self, result: AgentRunResult) -> str | None:
+        """Persist a WAITING_* result and return its checkpoint id (else None).
+
+        Public seam (Phase 41B) so the RuntimeStreamer can checkpoint a *streamed*
+        waiting run through the SAME store /agent/resume reads — making streamed
+        HITL runs resumable. Non-waiting outcomes are not checkpointed.
+        """
+        return await self._maybe_checkpoint(result)
+
     async def start(
         self,
         user_request: str,
