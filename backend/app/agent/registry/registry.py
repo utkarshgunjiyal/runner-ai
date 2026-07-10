@@ -31,6 +31,15 @@ class ToolRegistry:
             raise DuplicateToolError(f"Tool id already registered: '{tool.id}'")
         self._tools[tool.id] = tool
 
+    def unregister(self, tool_id: str) -> None:
+        """Remove a tool id if present (idempotent).
+
+        Additive to Phase 1: used by dynamic sources (e.g. MCP discovery refresh)
+        that replace a subset of registrations. Removing an id that was never
+        registered is a no-op, never an error.
+        """
+        self._tools.pop(tool_id, None)
+
     def get(self, tool_id: str) -> ToolSpec:
         try:
             return self._tools[tool_id]

@@ -23,7 +23,7 @@ from app.agent.capabilities.keyword_retriever import KeywordCapabilityRetriever
 from app.agent.llm.final_provider import DeterministicFinalProvider, FinalAnswerProvider
 from app.agent.llm.planner_provider import DeterministicPlannerProvider, V15PlannerProvider
 from app.agent.llm.provider_adapter import V15FinalAnswerProvider
-from app.agent.models.tool_spec import ToolSpec
+from app.agent.models.tool_spec import ToolKind, ToolSpec
 from app.agent.registry.loader import get_default_tool_registry
 from app.agent.registry.registry import ToolRegistry
 from app.agent.retriever.capability_retriever import HybridCapabilityRetriever
@@ -81,6 +81,52 @@ class InternalCapabilityExecutor:
         return await adapter.execute(capability, args)
 
 
+class CompositeCapabilityExecutor:
+    """Kind-routing Execution Bridge (Phase 39).
+
+    Dispatches on ``ToolSpec.kind`` to the executor for that kind — the live-path
+    analogue of the Phase 8 AdapterRegistry (which returns ``dict``; this returns
+    ``AdapterResult``). Internal tools route to the existing
+    ``InternalCapabilityExecutor``; MCP tools route to the ``MCPAdapter``. This is
+    the single seam where MCP joins execution, keeping DirectRuntime/PlannerRuntime
+    MCP-agnostic. With only the internal executor it behaves identically to it.
+    """
+
+    def __init__(self, executors: dict[ToolKind, object]) -> None:
+        self._executors = dict(executors)
+
+    async def execute(self, tool: ToolSpec, args: dict) -> AdapterResult:
+        executor = self._executors.get(tool.kind)
+        if executor is None:
+            return AdapterResult.failure(
+                ErrorCode.UNKNOWN_CAPABILITY,
+                retryable=False,
+                metadata={"tool_id": tool.id, "kind": tool.kind.value,
+                          "reason": "no executor registered for tool kind"},
+            )
+        return await executor.execute(tool, args)
+
+
+def _build_capability_executor(mcp_registry_manager):
+    """Default Execution Bridge. Internal-only unless an MCP manager is provided.
+
+    The MCP adapter is imported lazily *inside* this helper so the default runtime
+    (and the whole default test suite) never imports the MCP package unless MCP is
+    actually configured.
+    """
+    if mcp_registry_manager is None:
+        return InternalCapabilityExecutor()
+
+    from app.agent.tools.mcp_adapter import MCPAdapter  # lazy: MCP-only path
+
+    return CompositeCapabilityExecutor(
+        {
+            ToolKind.INTERNAL: InternalCapabilityExecutor(),
+            ToolKind.MCP: MCPAdapter(mcp_registry_manager),
+        }
+    )
+
+
 def build_default_runtime(
     *,
     context_engine: ContextEngine | None = None,
@@ -95,6 +141,7 @@ def build_default_runtime(
     embedding=None,
     reranker=None,
     final_hybrid_pipeline=None,
+    mcp_registry_manager=None,
 ) -> AgentOrchestrator:
     """Construct and wire the default runtime, returning an AgentOrchestrator.
 
@@ -105,16 +152,29 @@ def build_default_runtime(
     retriever is Stage 1, wrapped by ``HybridCapabilityRetriever``. The default
     ``embedding``/``reranker`` are Null, so ordering is identical to the pure
     keyword retriever until real stages are injected.
+
+    MCP (Phase 39, additive). ``mcp_registry_manager`` is the optional MCP
+    composition seam. When ``None`` (the default) the runtime is byte-identical to
+    before — no MCP, plain ``InternalCapabilityExecutor``, no MCP imports touched.
+    When provided, its *shared* registry becomes the runtime registry (so any
+    already-discovered MCP tools participate in the existing hybrid retrieval), and
+    execution routes by kind: internal → ``InternalCapabilityExecutor``, MCP →
+    ``MCPAdapter``. Server registration/discovery is the composition root's job and
+    must happen on the manager *before* calling this; the factory never connects.
     """
 
     engine = context_engine or default_context_engine()
-    registry = tool_registry or get_default_tool_registry()
+    if mcp_registry_manager is not None:
+        # Share the manager's registry so discovered MCP tools are retrievable.
+        registry = mcp_registry_manager.tool_registry
+    else:
+        registry = tool_registry or get_default_tool_registry()
     retriever = HybridCapabilityRetriever(
         KeywordCapabilityRetriever(registry),
         embedding=embedding or NullEmbeddingRetriever(),
         reranker=reranker or NullReranker(),
     )
-    executor = capability_executor or InternalCapabilityExecutor()
+    executor = capability_executor or _build_capability_executor(mcp_registry_manager)
 
     direct_runtime = DirectRuntime(retriever, executor, top_k=top_k)
     planner_runtime = PlannerRuntime(direct_runtime, retriever, top_k=top_k)

@@ -473,6 +473,29 @@ where the agent layer touches live V1.5 code — a thin translation of typed arg
 to an existing service call, with zero duplicated business logic. API and MCP
 adapters follow later.
 
+**Phase 13+ update (Execution Bridge — additive, does not change locked
+decisions).** The *live runtime* path (`DirectRuntime` / `PlannerRuntime`) does
+not use the Phase 8–9 sync `ToolAdapter.execute -> dict` + `AdapterRegistry`
+dispatch (that remains the `PlanExecutor`'s path). Instead it uses an **async
+Execution Bridge** contract — `CapabilityExecutor.execute(tool, args) ->
+AdapterResult` (`tools/result.py`) — whose default implementation
+(`InternalCapabilityExecutor`) routes internal `ToolSpec`s to
+`InternalAdapter`s. `AdapterResult` is the uniform success/evidence/retryable
+shape the Recovery Pipeline (§20) and Final Context Builder consume.
+
+**Phase 39 update (MCP adapter boundary).** MCP joins at this same
+`CapabilityExecutor` seam, not as a second runtime. `app/agent/mcp/` discovers a
+server's tools through an SDK-agnostic `MCPClient` Protocol and normalizes each
+into a `ToolSpec` (`kind=MCP`, id `mcp.<server_id>.<tool_name>`) registered in
+the *shared* `ToolRegistry`, so MCP tools participate in the **existing** hybrid
+capability retrieval (§13, §26.2) with no separate path. A
+`CompositeCapabilityExecutor` routes by `ToolKind` (internal → internal executor,
+MCP → `MCPAdapter`); the `MCPAdapter` calls the client and normalizes the result
+into `AdapterResult`. The planner/orchestrator/evaluator/repair/final-builder
+stay MCP-agnostic; no vendor MCP SDK is imported in `app.agent`; server config is
+trusted-only and secrets never enter a `ToolSpec`. This realizes the "Internal /
+API / MCP Adapters" node already shown in §2 and §26.5.
+
 ---
 
 ## 20. Recovery Pipeline

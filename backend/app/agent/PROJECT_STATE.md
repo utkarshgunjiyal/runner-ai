@@ -75,8 +75,8 @@ config-free and unit-testable without a database or credentials.
 | Field | Value |
 |---|---|
 | **Branch** | `v2-autonomous-platform` |
-| **Latest commit** | `ed621c0 — V2 Phase 38: True token streaming` |
-| **Test count** | **526 passing** (`481` under `tests/agent`, `45` under `tests/api`) |
+| **Latest commit** | `V2 Phase 39: MCP Integration Foundation` |
+| **Test count** | **585 passing** (`540` under `tests/agent`, `45` under `tests/api`) |
 | **Python** | 3.11 (developed on 3.11.15) |
 | **Test command** | `cd backend && python -m pytest` |
 
@@ -316,6 +316,22 @@ a queue and emits the terminal event; non-streaming `/agent/run` is byte-identic
 reconstructed after the fact; evaluation runs only on the fully-assembled answer;
 regeneration repair produces a second bounded stream round.
 
+### Phase 39 — MCP Integration Foundation
+A new `app/agent/mcp/` package lets Runner.ai connect to MCP servers through an
+SDK-agnostic `MCPClient` Protocol (deterministic `FakeMCPClient` for tests),
+discover their tools via `MCPRegistryManager`, and normalize each tool into a
+`ToolSpec` (`kind=MCP`, stable id `mcp.<server_id>.<tool_name>`) registered into
+the **shared** `ToolRegistry`. A `tools/mcp_adapter.py:MCPAdapter` executes MCP
+tools and returns an `AdapterResult`; a `CompositeCapabilityExecutor` routes the
+runtime Execution Bridge by `ToolKind` (internal → `InternalCapabilityExecutor`,
+MCP → `MCPAdapter`). `build_default_runtime(mcp_registry_manager=...)` is the
+optional seam. **Decision:** MCP is an *adapter boundary, not a second runtime* —
+the planner/orchestrator/evaluator/repair/final-builder stay MCP-agnostic;
+discovered MCP tools flow through the *existing* hybrid capability retrieval (no
+separate pipeline); no vendor MCP SDK is imported in `app.agent`; server config
+is trusted-only and secrets never enter a `ToolSpec`/`RuntimeEvent`; the default
+runtime (no MCP configured) is byte-identical to Phase 38.
+
 ---
 
 ## Runtime Pipeline
@@ -345,7 +361,8 @@ regeneration repair produces a second bounded stream round.
           │  orchestrates per task       │
           ▼                              ▼
   ┌──────────────────────────────────────────────┐
-  │   Execution (AdapterToolRunner → adapters →    │
+  │   Execution Bridge (CapabilityExecutor →       │
+  │     internal / MCP adapters → V1.5 or servers) │
   │              V1.5 services)                    │
   └────────┬─────────────────────────────────────┘
            ▼
@@ -490,6 +507,18 @@ Locations are under `backend/app/agent/`.
   `stream` (real).
 - **Outputs:** `FinalAnswer` / `ExecutionPlan`; streamed chunks via
   `generate_stream`.
+
+### MCP Integration — `mcp/{models,errors,client,registry}.py`, `tools/mcp_adapter.py`
+- **Responsibility:** connect to MCP servers (SDK-agnostic `MCPClient` Protocol +
+  `FakeMCPClient`), discover tools (`MCPRegistryManager`), normalize them into
+  `ToolSpec`s (`kind=MCP`, id `mcp.<server_id>.<tool_name>`) in the shared
+  registry, execute them (`MCPAdapter` → `AdapterResult`), and route the
+  Execution Bridge by kind (`CompositeCapabilityExecutor`).
+- **Dependencies:** an injected `MCPClient` and the shared `ToolRegistry`; the
+  runtime factory's optional `mcp_registry_manager` seam. No vendor SDK.
+- **Outputs:** registered MCP capabilities (retrievable via the existing hybrid
+  pipeline) and `AdapterResult`s with safe provenance (`adapter_type=mcp`,
+  `server_id`, `tool_name`, `capability_id`, `duration_ms`) — no secrets.
 
 ---
 
@@ -671,6 +700,11 @@ reason — most of the codebase relies on them.
     share them.
 16. **V1.5 is never modified by V2.** The agent layers on top; it does not rewrite
     platform services.
+17. **MCP is an adapter boundary, not a runtime.** Discovered MCP tools are
+    normalized `ToolSpec`s that flow through the existing retrieval + Execution
+    Bridge; the planner never knows a capability is internal/API/MCP; no vendor
+    MCP SDK is imported in `app.agent`; MCP server config is trusted-only and
+    secrets never enter a `ToolSpec` or `RuntimeEvent`.
 
 ---
 
@@ -678,18 +712,28 @@ reason — most of the codebase relies on them.
 
 | Phase | Milestone | Sketch |
 |---|---|---|
-| **Phase 39** | **MCP Integration** | Expose/consume capabilities over the Model Context Protocol so external MCP tools become first-class adapters — behind the same `ToolAdapter` / provider boundaries, no vendor SDK creep. |
-| **Phase 40** | **Unified Tool Registry** | Merge internal `ToolSpec`s, V1.5 capabilities, and MCP tools into one registry + retrieval surface, so the planner/direct runtimes see a single capability namespace. |
+| **Phase 39 ✅** | **MCP Integration Foundation** | *Done.* MCP servers are represented via trusted config; tools discovered through an injected `MCPClient` become normalized `ToolSpec` capabilities that participate in the existing hybrid retrieval and execute through the Execution Bridge into `AdapterResult`s. Planner/orchestrator stay MCP-agnostic. Fake client + one transport abstraction only (no live server, no SDK). |
+| **Phase 40** | **Unified Tool Registry** | Merge internal `ToolSpec`s, V1.5 capabilities, and MCP tools into one registry + retrieval surface, so the planner/direct runtimes see a single capability namespace. Includes real MCP transport (stdio / streamable_http) behind the `MCPClient` Protocol once an MCP dependency is added, plus per-capability enable/permission policy. |
 | **Phase 41** | **Frontend + HITL** | A UI over the streaming API and the `WAITING_*` outcomes: render live token streams, surface pending approvals/clarifications, and drive `/agent/resume`. |
 | **Phase 42** | **Production hardening** | Streaming transport hardening (keep-alive, client-disconnect cancellation), observability/metrics, rate limiting, load/soak testing, and deployment/runbook polish. |
+
+**Phase 39 current limitations (intentional scope boundary).** Only the transport
+*abstraction* + `FakeMCPClient` ship — there is **no real stdio/streamable_http
+client yet** (no MCP SDK is installed), so nothing connects to a live server. MCP
+composition is wired in the factory seam but **not yet mounted in `main.py`
+lifespan** (no configured servers, no admin endpoint — deliberately, since server
+registration must be trusted-only). Per-capability enable/permission policy for
+MCP tools and a real transport are Phase 40. `next recommended phase` → **Phase 40
+— Unified Tool Registry** (real MCP transport behind the same `MCPClient`
+Protocol + one capability namespace + policy).
 
 ---
 
 ## Test Status
 
-- **Current:** **526 passing** (1 benign Starlette deprecation warning),
-  `python -m pytest`, ~1–2s.
-  - `tests/agent/` — **481** (unit tests for every runtime stage; config-free,
+- **Current:** **585 passing** (1 benign Starlette deprecation warning),
+  `python -m pytest`, ~2–3s.
+  - `tests/agent/` — **540** (unit tests for every runtime stage; config-free,
     fakes + `asyncio.run`).
   - `tests/api/` — **45** (FastAPI `TestClient` over the routers with injected
     fakes; no DB/LLM).
@@ -715,6 +759,8 @@ reason — most of the codebase relies on them.
 - **Checkpoint & resume:** `test_checkpoint_store`, `test_mongo_checkpoint_store`,
   `test_async_checkpoint_store`, `test_resume_runtime`, `test_resume_coordinator`.
 - **Streaming:** `test_runtime_streaming`.
+- **MCP (Phase 39):** `test_mcp_models`, `test_mcp_registry`, `test_mcp_adapter`,
+  `test_mcp_integration`.
 - **API:** `test_agent_run`, `test_agent_resume`, `test_agent_stream`,
   `test_checkpoint_wiring`, `test_runtime_provider_wiring`,
   `test_provider_failure_api`.
@@ -737,6 +783,7 @@ app/
     execution/               ← executor, shared state, adapter runner
     gate/                    ← BehaviorGate (direct vs planner)
     llm/                     ← provider boundary: final_provider, planner_provider, provider_adapter
+    mcp/                     ← MCP boundary: models, errors, client (Protocol + FakeMCPClient), registry manager
     models/                  ← typed models: tool_spec, plan, final_prompt, planner_prompt, policy…
     optimization/            ← plan optimizer (execution groups)
     policy/                  ← policy engine (annotate-only)
@@ -745,7 +792,7 @@ app/
     retriever/               ← hybrid retrieval pipeline (embeddings, reranker, capability, context)
     runtime/                 ← orchestrator, direct/planner runtimes, outcome, factory,
                                streaming, events, resume_coordinator, context (RunContext)
-    tools/                   ← ToolAdapter ABC, adapter registry, internal V1.5 adapters
+    tools/                   ← ToolAdapter ABC, adapter registry, internal V1.5 adapters, mcp_adapter
     validation/              ← structural plan validator
   routes/                    ← FastAPI routers (agent.py = V2; chat/documents/jobs/memory/health = V1.5)
   services/                  ← V1.5 platform services (llm_client, retrieval, memory, …) — DO NOT import from agent
