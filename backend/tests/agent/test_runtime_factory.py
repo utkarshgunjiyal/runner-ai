@@ -76,8 +76,11 @@ def test_every_dependency_wired():
     assert isinstance(orch._planner_runtime, PlannerRuntime)
     assert isinstance(orch._final_context_builder, FinalContextBuilder)
     assert isinstance(orch._final_provider, DeterministicFinalProvider)
-    # Retriever is the keyword retriever over the default registry.
-    assert isinstance(orch._direct_runtime._retriever, KeywordCapabilityRetriever)
+    # Retriever is the hybrid retriever whose Stage-1 base is the keyword
+    # retriever over the default registry (Phase 29 wiring).
+    from app.agent.retriever.capability_retriever import HybridCapabilityRetriever
+    assert isinstance(orch._direct_runtime._retriever, HybridCapabilityRetriever)
+    assert isinstance(orch._direct_runtime._retriever.base, KeywordCapabilityRetriever)
     # Planner reuses the same DirectRuntime instance (no duplicate engine).
     assert orch._planner_runtime._direct is orch._direct_runtime
 

@@ -24,6 +24,9 @@ from app.agent.llm.final_provider import DeterministicFinalProvider, FinalAnswer
 from app.agent.models.tool_spec import ToolSpec
 from app.agent.registry.loader import get_default_tool_registry
 from app.agent.registry.registry import ToolRegistry
+from app.agent.retriever.capability_retriever import HybridCapabilityRetriever
+from app.agent.retriever.embedding_retriever import NullEmbeddingRetriever
+from app.agent.retriever.reranker import NullReranker
 from app.agent.runtime.direct_runtime import DirectRuntime
 from app.agent.runtime.orchestrator import AgentOrchestrator
 from app.agent.runtime.planner_runtime import PlannerRuntime
@@ -84,16 +87,28 @@ def build_default_runtime(
     final_provider: FinalAnswerProvider | None = None,
     plan_source=None,
     top_k: int = 5,
+    embedding=None,
+    reranker=None,
+    final_hybrid_pipeline=None,
 ) -> AgentOrchestrator:
     """Construct and wire the default runtime, returning an AgentOrchestrator.
 
     All defaults are real components; each is overridable via injection. The
     ``final_provider`` defaults to the LLM-free ``DeterministicFinalProvider``.
+
+    Capability retrieval runs through the Phase 28 hybrid pipeline: the keyword
+    retriever is Stage 1, wrapped by ``HybridCapabilityRetriever``. The default
+    ``embedding``/``reranker`` are Null, so ordering is identical to the pure
+    keyword retriever until real stages are injected.
     """
 
     engine = context_engine or default_context_engine()
     registry = tool_registry or get_default_tool_registry()
-    retriever = KeywordCapabilityRetriever(registry)
+    retriever = HybridCapabilityRetriever(
+        KeywordCapabilityRetriever(registry),
+        embedding=embedding or NullEmbeddingRetriever(),
+        reranker=reranker or NullReranker(),
+    )
     executor = capability_executor or InternalCapabilityExecutor()
 
     direct_runtime = DirectRuntime(retriever, executor, top_k=top_k)
@@ -104,7 +119,7 @@ def build_default_runtime(
         behavior_gate=BehaviorGate(),
         direct_runtime=direct_runtime,
         planner_runtime=planner_runtime,
-        final_context_builder=FinalContextBuilder(),
+        final_context_builder=FinalContextBuilder(hybrid_pipeline=final_hybrid_pipeline),
         final_provider=final_provider or DeterministicFinalProvider(),
         plan_source=plan_source,
     )

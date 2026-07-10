@@ -69,12 +69,17 @@ class FinalContextBuilder:
         chars_per_token: int = 4,
         prioritizer: ContextPrioritizer | None = None,
         budget_manager: BudgetManager | None = None,
+        hybrid_pipeline=None,
     ) -> None:
         self._system_prompt = system_prompt or self.DEFAULT_SYSTEM_PROMPT
         self._final_instructions_override = final_instructions
         self._budget = max(0, budget)
         self._prioritizer = prioritizer or ContextPrioritizer()
         self._budget_manager = budget_manager or BudgetManager(chars_per_token=chars_per_token)
+        # Optional Phase 28 hybrid pipeline. When absent, behavior is unchanged;
+        # when present (even with Null stages), it reorders the prioritized
+        # working context before budgeting — deterministic Stage 1 is preserved.
+        self._hybrid_pipeline = hybrid_pipeline
 
     # -- Public API ----------------------------------------------------------
 
@@ -168,6 +173,9 @@ class FinalContextBuilder:
         if report.is_empty or budget == 0:
             return [], 0
 
+        if self._hybrid_pipeline is not None:
+            report = self._reorder_report(report, run_context.user_request)
+
         # Rewrap so each item's priority score survives budgeting for provenance.
         wrapped = [
             RankedContextItem(
@@ -192,6 +200,23 @@ class FinalContextBuilder:
             for kept in budgeted.kept_items
         ]
         return sections, budgeted.used_tokens
+
+    def _reorder_report(self, report, user_request: str):
+        """Reorder a PriorityReport through the hybrid pipeline (Stage 1 scores
+        feed the deterministic tier, so Null stages leave the order unchanged)."""
+        from app.agent.retriever.hybrid_pipeline import Candidate
+
+        candidates = [
+            Candidate(
+                id=f"ctx-{i}", text=r.item.content, payload=r,
+                deterministic_score=r.score.final_score,
+            )
+            for i, r in enumerate(report.ranked)
+        ]
+        result = self._hybrid_pipeline.retrieve(
+            user_request, candidates, top_k=len(candidates)
+        )
+        return PriorityReport(ranked=[sc.candidate.payload for sc in result.ranked])
 
     # -- Tool outputs --------------------------------------------------------
 

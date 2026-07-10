@@ -14,6 +14,8 @@ from app.agent.retriever.hybrid_pipeline import (
     candidate_from_context_item,
     candidate_from_evidence_section,
 )
+from app.agent.retriever.capability_retriever import HybridCapabilityRetriever
+from app.agent.retriever.context_retriever import HybridContextRetriever
 from app.agent.retriever.reranker import FakeReranker, NullReranker, Reranker
 
 __all__ = [
@@ -23,6 +25,8 @@ __all__ = [
     "Reranker",
     "FakeReranker",
     "NullReranker",
+    "HybridCapabilityRetriever",
+    "HybridContextRetriever",
     "HybridRetrievalPipeline",
     "HybridRetrievalResult",
     "Candidate",
