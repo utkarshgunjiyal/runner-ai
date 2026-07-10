@@ -13,7 +13,11 @@ from app.routes.chat import router as chat_router
 from app.routes.documents import router as documents_router
 from app.routes.jobs import router as jobs_router
 from app.routes.memory import router as memory_router
-from app.routes.agent import router as agent_router, configure_checkpoint_store
+from app.routes.agent import (
+    router as agent_router,
+    configure_checkpoint_store,
+    configure_agent_runtime,
+)
 from app.agent.checkpoint.composition import select_checkpoint_store
 from app.agent.checkpoint.mongo_store import mongo_collection_from_uri
 
@@ -49,6 +53,11 @@ async def lifespan(app: FastAPI):
         store = select_checkpoint_store(settings.agent_checkpoint_backend)
     configure_checkpoint_store(store)
     logger.info("app.checkpoint_backend_ready", extra={"backend": settings.agent_checkpoint_backend})
+
+    # Agent LLM providers (Phase 37). Composition root selects deterministic vs
+    # real V1.5-backed providers; routes stay config-free. One shared orchestrator.
+    configure_agent_runtime(use_real_llm=settings.agent_use_real_llm)
+    logger.info("app.agent_llm_ready", extra={"use_real_llm": settings.agent_use_real_llm})
 
     yield
 

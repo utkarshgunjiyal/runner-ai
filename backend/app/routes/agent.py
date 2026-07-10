@@ -74,13 +74,24 @@ def resolve_user_id(user) -> str:
 _orchestrator = None
 _checkpoint_store = None
 _coordinator: AsyncResumeCoordinator | None = None
+_use_real_llm = False
 
 
 def _get_orchestrator():
     global _orchestrator
     if _orchestrator is None:
-        _orchestrator = build_default_runtime()
+        _orchestrator = build_default_runtime(use_real_llm=_use_real_llm)
     return _orchestrator
+
+
+def configure_agent_runtime(*, use_real_llm: bool = False) -> None:
+    """Composition-root hook: select the LLM provider mode before the shared
+    orchestrator is first built. Providers are built once and shared across
+    /agent/run, /agent/resume and /agent/run/stream. Routes never read config."""
+    global _use_real_llm, _orchestrator, _coordinator
+    _use_real_llm = bool(use_real_llm)
+    _orchestrator = None  # rebuild with the selected providers on next use
+    _coordinator = None
 
 
 def get_checkpoint_store():
@@ -127,13 +138,24 @@ def _to_response(coord_result) -> AgentRunResponse:
         checkpoint_id=coord_result.checkpoint_id,
         pending_action=result.pending_action,
         pending_reason=result.pending_reason,
-        metadata={
-            "behavior_path": result.behavior_path,
-            "provider": result.answer.provider,
-            "model": result.answer.model,
-            "evaluation_passed": result.metadata.get("evaluation_passed"),
-        },
+        metadata=_safe_response_metadata(result),
     )
+
+
+def _safe_response_metadata(result) -> dict:
+    metadata = {
+        "behavior_path": result.behavior_path,
+        "provider": result.answer.provider,
+        "model": result.answer.model,
+        "evaluation_passed": result.metadata.get("evaluation_passed"),
+    }
+    # Surface API-safe provider-failure classification when present (no vendor
+    # detail — only stage/code/retryable/clarification flags).
+    for key in ("failure_stage", "error_code", "retryable", "clarification_needed",
+                "planner_error_type"):
+        if result.metadata.get(key) is not None:
+            metadata[key] = result.metadata[key]
+    return metadata
 
 
 @router.post("/run", response_model=AgentRunResponse)

@@ -21,6 +21,7 @@ runtime already recorded.
 from collections.abc import AsyncIterator
 
 from app.agent.runtime.events import RuntimeEvent, RuntimeEventType as E
+from app.agent.runtime.outcome import RuntimeOutcome
 
 
 class _Sequencer:
@@ -76,6 +77,20 @@ class RuntimeStreamer:
 
         def add(event_type: E, **data) -> None:
             events.append(seq.make(event_type, run_id=run_id, data=data))
+
+        # Terminal failure (e.g. a provider failure the orchestrator converted
+        # into a FAILED outcome): emit runtime_failed with API-safe metadata and
+        # stop — no stage events, no runtime_completed after it.
+        if result.runtime_outcome == RuntimeOutcome.FAILED:
+            add(
+                E.RUNTIME_FAILED,
+                runtime_outcome=result.runtime_outcome.value,
+                failure_stage=result.metadata.get("failure_stage"),
+                error_code=result.metadata.get("error_code"),
+                retryable=result.metadata.get("retryable"),
+                reason=result.pending_reason,
+            )
+            return events
 
         # Context
         add(E.CONTEXT_STARTED)

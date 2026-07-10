@@ -38,6 +38,15 @@ from app.agent.llm.final_provider import (
     FinalAnswerProvider,
     attach_final_answer,
 )
+from app.agent.llm.planner_provider import (
+    PlannerOutputValidationError,
+    PlannerProviderError,
+)
+from app.agent.llm.provider_adapter import (
+    FinalProviderError,
+    ProviderError,
+    ProviderUnavailableError,
+)
 from app.agent.models.final_prompt import FinalPrompt
 from app.agent.repair.runtime import RepairRuntime
 from app.agent.runtime.context import BehaviorPath, RunContext
@@ -164,15 +173,29 @@ class AgentOrchestrator:
         path = run_context.behavior_profile.path
 
         # 3. Dispatch to the one execution engine (planner orchestrates direct).
+        # Planner-provider failures never execute a guessed plan — they convert
+        # to a safe RuntimeOutcome. Only DOMAIN provider errors are caught;
+        # programming bugs still propagate.
         if path == BehaviorPath.PLANNER:
-            plan = await self._resolve_plan(run_context)
+            try:
+                plan = await self._resolve_plan(run_context)
+            except (PlannerProviderError, ProviderUnavailableError) as exc:
+                return self._provider_failure_result(
+                    run_context, path.value, stage="planner_provider", exc=exc
+                )
             run_context = await self._planner_runtime.run(run_context, plan)
         else:
             run_context = await self._direct_runtime.run(run_context)
 
         # 4-6. Build the final prompt, generate, and record the draft answer.
         final_prompt = self._final_context_builder.build(run_context)
-        answer = await self._final_provider.generate(final_prompt)
+        try:
+            answer = await self._final_provider.generate(final_prompt)
+        except (FinalProviderError, ProviderUnavailableError) as exc:
+            return self._provider_failure_result(
+                run_context, path.value, stage="final_provider", exc=exc,
+                final_prompt=final_prompt,
+            )
         attach_final_answer(run_context, answer)
 
         result_metadata = {
@@ -295,6 +318,78 @@ class AgentOrchestrator:
                 run_context, top_k=self._planner_top_k
             ).matches
         return build_planner_prompt(run_context, matches)
+
+    def _provider_failure_result(
+        self,
+        run_context: RunContext,
+        behavior_path: str,
+        *,
+        stage: str,
+        exc: ProviderError,
+        final_prompt: FinalPrompt | None = None,
+    ) -> AgentRunResult:
+        """Convert a domain provider failure into an API-safe AgentRunResult.
+
+        No vendor detail is exposed — only the error's ``safe_message`` /
+        ``error_code`` / ``retryable``. Evaluation/repair is NOT run (there is no
+        valid draft answer). A validation-level planner failure degrades to
+        WAITING_FOR_USER (a clarification may help); everything else is FAILED.
+        """
+        error_code = getattr(exc, "error_code", "provider_error")
+        retryable = bool(getattr(exc, "retryable", False))
+        safe_message = getattr(exc, "safe_message", "The request could not be completed.")
+        clarification_needed = bool(getattr(exc, "clarification_needed", False))
+
+        if isinstance(exc, PlannerOutputValidationError):
+            outcome = RuntimeOutcome.WAITING_FOR_USER
+            pending_action = "ask_user_for_clarification"
+        else:
+            outcome = RuntimeOutcome.FAILED
+            pending_action = None
+
+        if final_prompt is None:
+            final_prompt = self._final_context_builder.build(run_context)
+
+        # Placeholder answer carrying only the safe message (no vendor text).
+        answer = FinalAnswer(
+            text=safe_message, provider="", model="", finish_reason="error",
+            metadata={"error": True, "error_code": error_code},
+        )
+        attach_final_answer(run_context, answer)
+
+        run_context.metadata["runtime_outcome"] = outcome.value
+        run_context.metadata["provider_failure"] = {
+            "stage": stage, "error_code": error_code, "retryable": retryable,
+            "error_type": type(exc).__name__,
+        }
+
+        result_metadata = {
+            "behavior_decision": run_context.metadata.get("behavior_decision"),
+            "execution_status": run_context.metadata.get("execution_status"),
+            "provider": answer.provider,
+            "model": answer.model,
+            "failure_stage": stage,
+            "error_code": error_code,
+            "retryable": retryable,
+            "clarification_needed": clarification_needed,
+            "runtime_outcome": outcome.value,
+        }
+        if stage == "planner_provider":
+            result_metadata["planner_error_type"] = type(exc).__name__
+
+        return AgentRunResult(
+            run_id=run_context.run_id,
+            user_id=run_context.user_id,
+            thread_id=run_context.thread_id,
+            behavior_path=behavior_path,
+            answer=answer,
+            final_prompt=final_prompt,
+            run_context=run_context,
+            runtime_outcome=outcome,
+            pending_action=pending_action,
+            pending_reason=safe_message,
+            metadata=result_metadata,
+        )
 
     # -- Resume continuation (Phase 26) --------------------------------------
 

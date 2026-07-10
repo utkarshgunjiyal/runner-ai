@@ -20,15 +20,34 @@ _CITATION_RE = re.compile(r"\[([A-Za-z]+\d+)\]")
 
 
 class ProviderError(Exception):
-    """Base for provider-adapter failures (never a raw vendor exception)."""
+    """Base for provider-adapter failures (never a raw vendor exception).
+
+    Carries API-safe classification fields. ``safe_message`` is a generic,
+    vendor-free string — the raw exception text (which may hold vendor detail) is
+    never exposed beyond the adapter.
+    """
+
+    error_code = "provider_error"
+    retryable = False
+    stage = "provider"
+    safe_message = "The provider could not complete the request."
 
 
 class ProviderUnavailableError(ProviderError):
     """The underlying V1.5 LLM service/credentials could not be resolved."""
 
+    error_code = "provider_unavailable"
+    retryable = True
+    safe_message = "The language model service is temporarily unavailable."
+
 
 class FinalProviderError(ProviderError):
     """The final-answer provider failed to produce an answer."""
+
+    error_code = "final_provider_error"
+    retryable = False
+    stage = "final_provider"
+    safe_message = "The final answer could not be generated."
 
 
 async def resolve_v15_complete():

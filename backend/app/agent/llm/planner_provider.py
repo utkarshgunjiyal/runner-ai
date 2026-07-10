@@ -29,13 +29,24 @@ from app.agent.runtime.planner_runtime import ExecutionPlan, PlannerTask
 class PlannerProviderError(ProviderError):
     """Base for planner provider failures."""
 
+    error_code = "planner_error"
+    stage = "planner_provider"
+    safe_message = "The plan could not be generated."
+
 
 class PlannerOutputParseError(PlannerProviderError):
     """The planner output was not valid JSON."""
 
+    error_code = "planner_output_parse_error"
+    safe_message = "The generated plan was not valid."
+
 
 class PlannerOutputValidationError(PlannerProviderError):
     """The planner output was valid JSON but not a valid plan."""
+
+    error_code = "planner_output_validation_error"
+    safe_message = "The generated plan was invalid; a clarification may help."
+    clarification_needed = True
 
 
 class PlannerProvider(Protocol):

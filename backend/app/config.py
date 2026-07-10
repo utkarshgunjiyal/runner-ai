@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     agent_checkpoint_backend: str = "memory"
     agent_checkpoint_collection: str = "agent_checkpoints"
 
+    # -- Agent LLM providers (Phase 37) --------------------------------------
+    # False (default) uses the deterministic providers (safe for tests/local);
+    # True selects the V1.5-backed planner/final adapters, reusing the existing
+    # llm_provider/llm_model settings above. No second LLM config system.
+    agent_use_real_llm: bool = False
+
     @field_validator("agent_checkpoint_backend")
     @classmethod
     def _validate_checkpoint_backend(cls, value: str) -> str:
