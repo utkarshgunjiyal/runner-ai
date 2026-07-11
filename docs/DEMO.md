@@ -142,6 +142,12 @@ token (`GITHUB_MCP_TOKEN` or `GITHUB_PERSONAL_ACCESS_TOKEN`) at the deployment
 level (see [GITHUB_MCP.md](./GITHUB_MCP.md)). Everything goes through the real MCP
 stack — no direct GitHub REST.
 
+In **Docker Compose** the backend runs in a container, so use the default
+`GITHUB_MCP_TRANSPORT=http` — it reaches the official remote endpoint
+(`https://api.githubcopilot.com/mcp/`) over outbound HTTPS with **no Docker socket
+mount**. (`GITHUB_MCP_TRANSPORT=stdio` is a local developer mode that needs Docker
+on the host and does not work inside the Compose backend.)
+
 - **Missing config** → Runner.ai starts normally; the Integrations panel shows
   GitHub **Not configured**; document/chat flows work; a GitHub request gets a safe
   unavailable result (GitHub tools are excluded before planning — no doc fallback).

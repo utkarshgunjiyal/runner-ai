@@ -11,16 +11,34 @@ capability retrieval → direct/planner runtime → MCP tool adapter →
 GitHub MCP server → GitHub API → normalized result → grounded answer
 ```
 
-## Selected server (pinned)
+## Transport (Phase 46.2.1)
 
-- **Official GitHub MCP server** — `github/github-mcp-server`
-  (<https://github.com/github/github-mcp-server>).
-- Transport: **stdio**, run via the published container image.
-- Pinned image (override with `GITHUB_MCP_IMAGE`): **`ghcr.io/github/github-mcp-server:v0.6.0`**
-  — never a floating `:latest`. **Confirm the tag against the release page for your
-  deployment** and run the verification script below.
-- Launched read-only: `stdio --read-only` with
-  `GITHUB_TOOLSETS=repos,issues,pull_requests`.
+Two modes, selected by `GITHUB_MCP_TRANSPORT`:
+
+- **`http` (recommended, DEFAULT)** — the **official remote Streamable HTTP MCP
+  endpoint** `https://api.githubcopilot.com/mcp/` (override with `GITHUB_MCP_URL`).
+  This is the correct mode for **Docker Compose**: `runner_backend` reaches it over
+  **outbound HTTPS** with **no Docker socket, no Docker CLI, and no
+  Docker-in-Docker**. Auth is `Authorization: Bearer <token>` sent via
+  `MCPServerConfig.headers` (never in the URL). Runner.ai's existing
+  `StreamableHTTPTransport` handles the full lifecycle (`initialize` →
+  `notifications/initialized` → `tools/list` → `tools/call`), JSON **and** SSE
+  responses, and the `mcp-session-id` header.
+
+  > **Why `docker.sock` is intentionally not mounted:** mounting the host Docker
+  > socket into the backend grants effective host root and is a serious security
+  > risk. The remote HTTP endpoint removes the need entirely — no socket, no
+  > sibling daemon, no privileged container, no new port.
+
+- **`stdio` (optional developer mode)** — launches the **official
+  `github/github-mcp-server`** image (pinned, `--read-only`) as a **local Docker
+  process**. The **host running Runner.ai must have Docker available** — this does
+  **not** work inside the Compose backend container. Pinned image (override
+  `GITHUB_MCP_IMAGE`): **`ghcr.io/github/github-mcp-server:v0.6.0`** — never
+  `:latest`; confirm the tag against the release page.
+
+Both modes enforce the same **read-only allowlist** (below); the allowlist is the
+authoritative guarantee regardless of transport.
 
 ## Authentication (development / deployment-scoped)
 
@@ -29,10 +47,16 @@ Configured at the **deployment/server level only** via environment variables:
 | Variable | Purpose |
 | --- | --- |
 | `GITHUB_MCP_ENABLED` | `true` to enable (default `false`). |
+| `GITHUB_MCP_TRANSPORT` | `http` (default, recommended) or `stdio`. |
 | `GITHUB_MCP_TOKEN` **or** `GITHUB_PERSONAL_ACCESS_TOKEN` | The GitHub token (a **secret**). |
-| `GITHUB_MCP_IMAGE` | Pinned server image tag. |
-| `GITHUB_MCP_TOOLSETS` | `repos,issues,pull_requests`. |
+| `GITHUB_MCP_URL` | Remote endpoint (**http mode only**); default `https://api.githubcopilot.com/mcp/`. |
+| `GITHUB_MCP_IMAGE` | Pinned server image tag (**stdio mode only**). |
+| `GITHUB_MCP_TOOLSETS` | `repos,issues,pull_requests` (stdio mode). |
 | `GITHUB_MCP_TIMEOUT_SECONDS` | Per-call timeout (default 45). |
+
+Configuration **fails safe**: an unsupported `GITHUB_MCP_TRANSPORT`, or `http` mode
+with an empty `GITHUB_MCP_URL`, disables the connector (status "Not configured")
+without affecting the rest of Runner.ai.
 
 The token is placed **only** in the server process environment — never on the
 command line, in a `ToolSpec`, in tool metadata, in an API response, or in a log/
@@ -143,6 +167,8 @@ GITHUB_MCP_ENABLED=true GITHUB_MCP_TOKEN=ghp_xxx \
 | --- | --- |
 | Status `Not configured` | `GITHUB_MCP_ENABLED` not `true`, or no token. |
 | Status `Authentication failed` | Invalid/expired token, or missing read scope. |
-| Status `Unavailable` | Docker not running, image tag wrong, or network blocked. |
-| `could not pull <image>` | Confirm the pinned tag exists; set `GITHUB_MCP_IMAGE`. |
+| Status `Unavailable` | http: outbound HTTPS blocked / endpoint down / timeout. stdio: Docker not running or image tag wrong. |
+| Status `Degraded` | Connected but zero allowlisted read tools registered — confirm the tool names for your server version (do not guess). |
+| `command -v docker` → not found / `docker.sock` not mounted inside `runner_backend` | Expected — use `GITHUB_MCP_TRANSPORT=http` (default). stdio requires Docker on the host and is not for Compose. |
+| `could not pull <image>` (stdio) | Confirm the pinned tag exists; set `GITHUB_MCP_IMAGE`. |
 | GitHub request answered from documents | Should not happen — GitHub tools are excluded when unavailable; file a bug. |

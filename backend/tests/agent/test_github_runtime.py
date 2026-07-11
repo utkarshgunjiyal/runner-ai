@@ -42,8 +42,12 @@ def _github_defs():
 
 
 def _connectors_snapshot(*, connected: bool):
-    state = derive_state(configured=True, connected=connected,
-                         error_code=None if connected else "mcp_transport_unavailable")
+    state = derive_state(
+        configured=True, connected=connected,
+        capabilities=["search_repositories"] if connected else [],
+        allowed_tool_count=1 if connected else 0,
+        error_code=None if connected else "mcp_transport_unavailable",
+    )
     record = build_github_connector_record("u", state)
     return [record.public_view()] if record else []
 

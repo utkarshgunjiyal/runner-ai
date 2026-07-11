@@ -59,6 +59,8 @@ def test_refresh_reevaluates():
         calls["n"] += 1
         connected = calls["n"] >= 2  # first call not connected, then connected
         return derive_state(configured=True, connected=connected,
+                            capabilities=["list_issues"] if connected else [],
+                            allowed_tool_count=1 if connected else 0,
                             error_code=None if connected else "mcp_transport_unavailable")
 
     client = _client(provider)

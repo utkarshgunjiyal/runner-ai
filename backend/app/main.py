@@ -133,6 +133,8 @@ async def lifespan(app: FastAPI):
         server_configs.append(
             build_github_mcp_server_config(
                 token=settings.resolved_github_token,
+                transport=settings.github_mcp_transport,
+                url=settings.github_mcp_url,
                 image=settings.github_mcp_image,
                 toolsets=settings.github_mcp_toolsets,
                 timeout_seconds=settings.github_mcp_timeout_seconds,

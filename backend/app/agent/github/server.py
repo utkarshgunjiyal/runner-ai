@@ -25,8 +25,12 @@ from app.agent.mcp.models import MCPRetryConfig, MCPServerConfig, MCPTransport
 # ``provider=github`` — so these tools are connector-gated for free.
 GITHUB_MCP_SERVER_ID = "github"
 
-# Pinned image reference (override with GITHUB_MCP_IMAGE for a confirmed release).
-# NOTE: pin to a stable release tag you have verified for your deployment.
+# Official remote Streamable HTTP MCP endpoint (Phase 46.2.1). Works from a
+# containerized backend over outbound HTTPS — no Docker socket / CLI / DinD.
+DEFAULT_GITHUB_MCP_URL = "https://api.githubcopilot.com/mcp/"
+
+# Pinned image reference (stdio mode only; override with GITHUB_MCP_IMAGE for a
+# confirmed release). NOTE: pin to a stable release tag you have verified.
 DEFAULT_GITHUB_MCP_IMAGE = "ghcr.io/github/github-mcp-server:v0.6.0"
 
 # The read-only toolset the server is asked to expose (repos, issues, PRs).
@@ -74,40 +78,71 @@ GITHUB_BLOCKED_WRITE_TOOLS: tuple[str, ...] = (
 def build_github_mcp_server_config(
     *,
     token: str,
+    transport: str = "http",
+    url: str = DEFAULT_GITHUB_MCP_URL,
     image: str = DEFAULT_GITHUB_MCP_IMAGE,
     command: list[str] | None = None,
     toolsets: str = DEFAULT_GITHUB_TOOLSETS,
     timeout_seconds: float = 45.0,
     allowlist: tuple[str, ...] | list[str] = GITHUB_READ_ONLY_TOOLS,
 ) -> MCPServerConfig:
-    """Build the trusted GitHub MCP ``MCPServerConfig`` (stdio).
+    """Build the trusted GitHub MCP ``MCPServerConfig``.
 
-    The token is placed only in the server process ENVIRONMENT (never in the
-    command line, never in a ToolSpec/metadata/log). ``command`` overrides the
-    default Docker invocation (e.g. to run a locally-built binary). Requires a
-    non-empty token — callers gate on configuration before calling this."""
+    ``transport`` selects the deployment mode (Phase 46.2.1):
+
+    - ``"http"`` (default): the official remote Streamable HTTP endpoint. The token
+      is sent ONLY in the ``Authorization: Bearer`` header (never in the URL, command
+      line, ToolSpec, metadata, or log). Works from a containerized backend over
+      outbound HTTPS — no Docker socket / CLI / Docker-in-Docker.
+    - ``"stdio"``: an optional developer mode that launches the official server as a
+      local Docker process (the host must have Docker). The token is placed only in
+      the process ENVIRONMENT.
+
+    Requires a non-empty token; callers gate on configuration first. Fails safe on an
+    unsupported transport or an http mode with no URL."""
     if not token or not str(token).strip():
         raise ValueError("GitHub MCP requires a non-empty token")
 
-    default_command = [
-        "docker", "run", "-i", "--rm",
-        "-e", "GITHUB_PERSONAL_ACCESS_TOKEN",
-        "-e", "GITHUB_TOOLSETS",
-        image,
-        "stdio", "--read-only",
-    ]
-    return MCPServerConfig(
+    mode = (transport or "http").strip().lower()
+    common = dict(
         server_id=GITHUB_MCP_SERVER_ID,
         name="GitHub (read-only)",
-        transport=MCPTransport.STDIO,
-        command=command or default_command,
-        environment={
-            "GITHUB_PERSONAL_ACCESS_TOKEN": str(token),
-            "GITHUB_TOOLSETS": toolsets,
-        },
         enabled=True,
         timeout_seconds=timeout_seconds,
         retry=MCPRetryConfig(max_attempts=2, base_delay_seconds=0.2, max_delay_seconds=2.0),
         tool_allowlist=list(allowlist),
-        metadata={"provider": "github", "read_only": True, "image": image},
     )
+
+    if mode == "http":
+        if not url or not str(url).strip():
+            raise ValueError("GitHub MCP http transport requires a URL")
+        return MCPServerConfig(
+            transport=MCPTransport.STREAMABLE_HTTP,
+            url=str(url).strip(),
+            # Token lives ONLY in the Authorization header (redacted from repr and
+            # excluded from public_metadata, which also omits url + headers).
+            headers={"Authorization": f"Bearer {token}"},
+            metadata={"provider": "github", "read_only": True, "transport": "http"},
+            **common,
+        )
+
+    if mode == "stdio":
+        default_command = [
+            "docker", "run", "-i", "--rm",
+            "-e", "GITHUB_PERSONAL_ACCESS_TOKEN",
+            "-e", "GITHUB_TOOLSETS",
+            image,
+            "stdio", "--read-only",
+        ]
+        return MCPServerConfig(
+            transport=MCPTransport.STDIO,
+            command=command or default_command,
+            environment={
+                "GITHUB_PERSONAL_ACCESS_TOKEN": str(token),
+                "GITHUB_TOOLSETS": toolsets,
+            },
+            metadata={"provider": "github", "read_only": True, "transport": "stdio", "image": image},
+            **common,
+        )
+
+    raise ValueError(f"unsupported GitHub MCP transport: {transport!r} (use 'http' or 'stdio')")

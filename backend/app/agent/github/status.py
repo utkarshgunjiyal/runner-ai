@@ -76,12 +76,18 @@ def derive_state(
     if not configured:
         return GithubConnectorState(configured=False, status=STATUS_NOT_CONFIGURED)
     if connected:
+        # Connected but zero allowlisted read tools registered → DEGRADED (e.g. the
+        # pinned tool names are absent on this server version). Never guess a
+        # replacement tool; report degraded so the operator confirms the release.
+        allowed = allowed_tool_count if allowed_tool_count else len(capabilities or [])
+        status = STATUS_CONNECTED if allowed > 0 else STATUS_DEGRADED
         return GithubConnectorState(
             configured=True,
-            status=STATUS_CONNECTED,
+            status=status,
             capabilities=list(capabilities or []),
             discovered_tool_count=discovered_tool_count,
             allowed_tool_count=allowed_tool_count,
+            error_code=None if status == STATUS_CONNECTED else "no_allowlisted_tools",
         )
     # Configured but not connected → classify by the (safe) error code.
     code = (error_code or "").lower()

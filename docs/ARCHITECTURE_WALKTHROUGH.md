@@ -176,7 +176,10 @@ the runtime never sees it.
 
 ### 12b. GitHub read-only MCP connector (Phase 46.2)
 A **real GitHub account** is reached through the existing MCP stack — no direct
-GitHub REST. The official `github-mcp-server` (pinned, stdio, `--read-only`) is
+GitHub REST. By default (Phase 46.2.1) the connector uses the **official remote
+Streamable HTTP endpoint** (`GITHUB_MCP_TRANSPORT=http`), so the containerized
+backend connects over outbound HTTPS with **no Docker socket / CLI / DinD**
+(`stdio` remains an optional local developer mode). The official server is
 registered as a trusted server; a **read-only allowlist** on the server config lets
 discovery register only repository/issue/PR read tools (all write/admin tools are
 excluded before they can become eligible). A `spec_transform` enriches each read

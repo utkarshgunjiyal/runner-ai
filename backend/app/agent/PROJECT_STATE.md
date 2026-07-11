@@ -75,8 +75,8 @@ config-free and unit-testable without a database or credentials.
 | Field | Value |
 |---|---|
 | **Branch** | `v2-autonomous-platform` |
-| **Latest commit** | `V2 Phase 46.2: GitHub Read-Only MCP Connector` |
-| **Test count** | **859 backend** + **91 frontend** (Vitest) |
+| **Latest commit** | `V2 Phase 46.2.1: Fix GitHub MCP Deployment Transport` |
+| **Test count** | **867 backend** + **91 frontend** (Vitest) |
 | **Python** | 3.11 (developed on 3.11.15) |
 | **Test command** | `cd backend && python -m pytest` |
 
@@ -655,6 +655,34 @@ router; styling is one design-token stylesheet.
   `threadSidebar`, `composer`, `sourceChips`, `chatShellLayout`; every prior
   behavioral test kept and green. Backend unchanged (814).
 
+### Phase 46.2.1 — GitHub MCP Deployment Transport Fix
+Phase 46.2 launched the GitHub MCP server as a local **stdio `docker run …`**
+process, which fails inside the containerized `runner_backend` (no `docker` binary,
+no `/var/run/docker.sock`) → `mcp_transport_unavailable`. This switches the default
+to the **official remote Streamable HTTP endpoint** — no new protocol code (the
+existing `StreamableHTTPTransport` already implements the full lifecycle).
+- **`GITHUB_MCP_TRANSPORT` (default `http`).** http uses
+  `https://api.githubcopilot.com/mcp/` (override `GITHUB_MCP_URL`) with
+  `Authorization: Bearer <token>` in `MCPServerConfig.headers` — works from the
+  Compose backend over **outbound HTTPS with no Docker socket / CLI / DinD / new
+  port**. `stdio` is preserved as an optional developer mode (host needs Docker).
+  Fail-safe: unsupported transport or http-without-URL disables GitHub cleanly.
+- **Secret handling.** In http mode the token is only in the Authorization header
+  (never in the URL/command/ToolSpec/metadata/logs/errors/API); `public_metadata()`
+  omits `url` and `headers`; the transport already redacts HTTP/vendor detail.
+- **Status.** 401/403 → `auth_failed`; timeout/network → `unavailable`; connected
+  but **zero allowlisted tools → degraded** (never guess a replacement tool). The
+  read-only allowlist is unchanged and authoritative in both transports.
+- **Preserved.** Allowlist, eligibility, normalization, status API, live frontend,
+  token redaction, graceful degradation, and all document/chat behavior are
+  unchanged. `scripts/verify-github-mcp.sh` is now transport-aware (http needs no
+  Docker).
+- **Tests.** +8 backend (867): `test_github_http_transport` (real
+  `StreamableHTTPTransport` via injectable POST — initialize/session/tools-list/
+  tools-call, JSON+SSE, 401/403→auth, 500→safe, allowlist blocks writes, token
+  never leaked) + config tests (http default, Bearer header, invalid transport /
+  http-without-url rejected, stdio still valid, degraded-on-zero-tools).
+
 ### Phase 46.2 — GitHub Read-Only MCP Connector
 Connects Runner.ai to a **real GitHub account** through the EXISTING MCP
 architecture (no direct GitHub REST). Read-only: repositories, issues, pull
@@ -1167,6 +1195,7 @@ reason — most of the codebase relies on them.
 | **Phase 44.1 ✅** | **Source-Aware Comparison Output** | *Done.* Fixes the demo's blended two-document comparison. The comparison intent (interpretation + resolved `documents`) is carried on `FinalPrompt.metadata` (`is_comparison`, `comparison_documents`) into synthesis; the **deterministic fallback provider** now groups evidence per document and emits a source-separated answer — `Document N — filename` sections + `Similarities` + `Differences` + `Sources`, with filename+page citations, covering every selected document (empty ones stated explicitly) and never blending across documents. Non-comparison path byte-identical; no new planner/interpreter; frontend already renders multi-line answers. |
 | **Phase 44.2 ✅** | **Evidence Compression & Comparison Synthesis** | *Done.* Improves only the deterministic/offline fallback comparison. New pure `comparison_synthesis.py`: a maintainable category→keyword taxonomy compresses retrieved chunks into concise, category-grouped technical skills (whole-token matching, normalized wrapped lines, de-duplicated), excludes contact/education/extracurricular/leadership noise, computes **concept-based** similarities/differences (not token lists), and cites **filename+page only** (no opaque `E#`). Output is bounded (no raw chunk dumps). Provider precedence, real-LLM path, retrieval, planner, checkpoint/resume, and frontend unchanged; non-comparison output byte-identical; streaming==non-streaming. |
 | **Phase 45 ✅** | **Final Frontend Polish & Demo UX** | *Done.* Frontend-only. Three-region **AI workspace** (conversations rail · chat · collapsed-by-default `RuntimeInspector`), design-token stylesheet, responsive (desktop columns → tablet inspector sheet → mobile sidebar drawer, overflow-free at 1440/834/390 px), a11y (focus-visible, `aria-*`, reduced-motion). Sidebar skeleton/empty/error+retry + relative time (`useThreads` additive `loading`/`error`); composer scope chips + Enter/Shift+Enter/Stop; answers lift `Sources` into filename+page **chips** (no `E#`); static **truthful** Integrations (Gmail/GitHub *coming next*, MCP *available* — no fake OAuth). No backend/planner/retrieval/ownership/checkpoint change; no new dependency. +26 frontend tests (89). |
+| **Phase 46.2.1 ✅** | **GitHub MCP Deployment Transport Fix** | *Done.* Phase 46.2's stdio `docker run` failed inside the containerized backend (no docker/`docker.sock`). Default transport is now the **official remote Streamable HTTP endpoint** (`GITHUB_MCP_TRANSPORT=http`, `https://api.githubcopilot.com/mcp/`, `Authorization: Bearer` header) — works from Compose over outbound HTTPS with **no Docker socket / CLI / DinD / new port**; `stdio` kept as optional dev mode. Uses the existing `StreamableHTTPTransport` (no new protocol code). 401/403→`auth_failed`, zero-allowlisted-tools→`degraded`; allowlist/eligibility/normalization/status/frontend/redaction unchanged. Transport-aware verify script. +8 backend (867). **Live GitHub still not verified here — fake-POST protocol tests only.** |
 | **Phase 46.2 ✅** | **GitHub Read-Only MCP Connector** | *Done.* Real GitHub account via the EXISTING MCP stack (no direct REST). Pinned official `github-mcp-server` (stdio, `--read-only`); token via env only (fail-safe, never logged/returned/in ToolSpec). Read-only **allowlist** at discovery (`search_repositories`, `list_issues`, `issue_read`, `list_pull_requests`, `pull_request_read`, `search_issues`) — all write/admin tools blocked. Rich ToolSpec enrichment; per-server result **normalization** (Repository/Issue/PullRequest, bounded excerpts, grounded, no raw payload/`E#`). Connector eligibility reflects real health (tools filtered before planning when unavailable; `DirectRuntime` now RunContext-aware). Live `/integrations` status API + frontend panel (no token input); Gmail stays truthful. Fail-safe startup; opt-in `verify-github-mcp.sh` (never in CI). +27 backend (859), +2 frontend (91). **Live GitHub not verified here — fake-MCP integration tests only.** |
 | **Phase 46.1 ✅** | **Deterministic Document Inventory Intent** | *Done.* Fixes an empty-thread routing/isolation bug where "what documents are uploaded?" ran document retrieval and returned an old résumé with `E1`. New `Intent.DOCUMENT_INVENTORY` + `is_document_inventory_request` (deterministic, no LLM) classify inventory questions (scope NONE) and exclude content/management requests. An orchestrator **fast path** lists the active thread's own document records (via `document_service.list_thread_documents`, same source as the UI) — bypassing scope gate, capability retrieval, planner, chunk retrieval, embeddings, reranker, and the final LLM — with empty evidence (no `E#`), safe status labels, filename-only, and identical streaming. Root cause was **routing** (fresh RunContext per run → no stale-state bug). +18 backend tests (832). |
 
@@ -1246,6 +1275,15 @@ provider (`AGENT_USE_REAL_LLM=true`) produces richer, fully prose comparisons fr
 the *same* comparison-marked prompt. Extraction depends on evidence carrying
 `filename`/`page` provenance. No live/paid API is called by the fallback or tests.
 
+**Phase 46.2.1 current limitations (intentional scope boundary).** The remote HTTP
+endpoint requires **outbound HTTPS** from the backend; if egress is blocked, GitHub
+reports `unavailable` (document/chat unaffected). **Live GitHub was NOT verified in
+this environment** (no network) — the http path is proven by protocol tests driving
+the real `StreamableHTTPTransport` with an injectable POST, plus the opt-in
+transport-aware `verify-github-mcp.sh`. Exact remote tool names must be confirmed
+per server version via that script; if the pinned allowlisted names are absent the
+connector reports `degraded` rather than guessing a replacement.
+
 **Phase 46.2 current limitations (intentional scope boundary).** The GitHub
 connector is **deployment-scoped, not per-user OAuth** — the configured token is
 shared by the deployment, so multi-user production exposure must be prevented
@@ -1284,8 +1322,11 @@ library, by choice). The dev-user auth stub is unchanged (documented in
 
 ## Test Status
 
-- **Backend:** **859 passing** (1 benign Starlette deprecation warning),
-  `cd backend && python -m pytest`, ~2–3s. Phase 46.2 adds `test_github_connector`,
+- **Backend:** **867 passing** (1 benign Starlette deprecation warning),
+  `cd backend && python -m pytest`, ~2–3s. Phase 46.2.1 adds `test_github_http_transport`
+  (real Streamable HTTP transport via injectable POST: initialize/session/tools-list/
+  tools-call, JSON+SSE, 401/403→auth, 500→safe, allowlist, no token leak) + http
+  config tests. Phase 46.2 adds `test_github_connector`,
   `test_github_mcp_integration`, `test_github_runtime`, and `tests/api/test_integrations`
   (allowlist blocks writes, normalization, secret redaction, eligibility/grounding,
   status API — all fake-MCP, no live GitHub). Phase 46.1 adds `test_document_inventory`

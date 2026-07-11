@@ -45,18 +45,35 @@ def test_config_requires_token_and_keeps_it_secret():
     with pytest.raises(ValueError):
         build_github_mcp_server_config(token="")
 
+    # Default = HTTP remote transport (Phase 46.2.1): token only in the header.
     config = build_github_mcp_server_config(token="ghp_SECRET123")
-    # Token lives ONLY in the process environment, never in the command line.
-    assert "ghp_SECRET123" not in " ".join(config.command)
-    assert config.environment["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp_SECRET123"
-    # Secret-free public metadata + redacted repr.
+    assert config.transport.value == "streamable_http"
+    assert config.url == "https://api.githubcopilot.com/mcp/"
+    assert config.headers["Authorization"] == "Bearer ghp_SECRET123"
+    assert "ghp_SECRET123" not in (config.url or "")  # never in the URL
+    # Secret-free repr + public metadata (omits headers AND url per policy).
     assert "ghp_SECRET123" not in repr(config)
-    assert "environment" not in config.public_metadata()
+    assert "headers" not in config.public_metadata()
+    assert "url" not in config.public_metadata()
     assert "ghp_SECRET123" not in str(config.public_metadata())
-    # Pinned image (not floating latest) + read-only launch.
+
+
+def test_stdio_mode_keeps_token_in_env_only():
+    config = build_github_mcp_server_config(token="ghp_SECRET123", transport="stdio")
+    assert config.transport.value == "stdio"
+    assert "ghp_SECRET123" not in " ".join(config.command)  # never on the command line
+    assert config.environment["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp_SECRET123"
+    assert "--read-only" in config.command
     assert config.metadata["image"] == DEFAULT_GITHUB_MCP_IMAGE
     assert ":latest" not in DEFAULT_GITHUB_MCP_IMAGE
-    assert "--read-only" in config.command
+    assert "ghp_SECRET123" not in repr(config)
+
+
+def test_invalid_transport_and_missing_url_fail_safe():
+    with pytest.raises(ValueError):
+        build_github_mcp_server_config(token="t", transport="carrier-pigeon")
+    with pytest.raises(ValueError):
+        build_github_mcp_server_config(token="t", transport="http", url="")
 
 
 def test_allowlist_is_read_only_and_excludes_all_write_tools():
@@ -180,13 +197,20 @@ def test_status_mapping():
                         error_code="mcp_transport_auth_error").status == STATUS_AUTH_FAILED
     assert derive_state(configured=True, connected=False,
                         error_code="mcp_transport_timeout").status == STATUS_UNAVAILABLE
+    # Connected but ZERO allowlisted read tools → degraded (never guess a tool).
+    from app.agent.github.status import STATUS_DEGRADED
+    assert derive_state(configured=True, connected=True, capabilities=[],
+                        allowed_tool_count=0).status == STATUS_DEGRADED
+    assert not derive_state(configured=True, connected=True, capabilities=[],
+                            allowed_tool_count=0).is_connected
 
 
 def test_connector_record_gates_eligibility():
     # Not configured → no record → github ineligible.
     assert build_github_connector_record("u", derive_state(configured=False, connected=False)) is None
-    # Connected → healthy record → eligible.
-    rec = build_github_connector_record("u", derive_state(configured=True, connected=True))
+    # Connected (with read tools) → healthy record → eligible.
+    rec = build_github_connector_record(
+        "u", derive_state(configured=True, connected=True, capabilities=["list_issues"], allowed_tool_count=1))
     assert rec.status == ConnectorStatus.CONNECTED and rec.is_healthy
     # Configured but failed → non-healthy record (reportable, not eligible).
     rec2 = build_github_connector_record("u", derive_state(configured=True, connected=False,

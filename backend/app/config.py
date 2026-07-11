@@ -69,10 +69,30 @@ class Settings(BaseSettings):
         repr=False,
     )
     github_personal_access_token: str | None = Field(default=None, repr=False)
-    # Pinned image reference (never a floating ``latest``); override per deployment.
+    # Transport (Phase 46.2.1): "http" (default) uses the official remote Streamable
+    # HTTP MCP endpoint — works from a containerized backend over outbound HTTPS with
+    # NO Docker socket, NO Docker CLI, and NO Docker-in-Docker. "stdio" is an optional
+    # developer mode that launches the server as a local Docker process (the host
+    # running Runner.ai must have Docker available; not for Compose).
+    github_mcp_transport: str = "http"
+    # Remote MCP endpoint (http mode only). The token goes in the Authorization
+    # header, never in the URL.
+    github_mcp_url: str = "https://api.githubcopilot.com/mcp/"
+    # Pinned image reference (stdio mode only; never a floating ``latest``).
     github_mcp_image: str = "ghcr.io/github/github-mcp-server:v0.6.0"
     github_mcp_toolsets: str = "repos,issues,pull_requests"
     github_mcp_timeout_seconds: float = 45.0
+
+    @field_validator("github_mcp_transport")
+    @classmethod
+    def _validate_github_transport(cls, value: str) -> str:
+        allowed = {"http", "stdio"}
+        normalized = (value or "http").strip().lower()
+        if normalized not in allowed:
+            raise ValueError(
+                f"github_mcp_transport must be one of {sorted(allowed)}, got {value!r}"
+            )
+        return normalized
 
     @property
     def resolved_github_token(self) -> str | None:
@@ -82,8 +102,13 @@ class Settings(BaseSettings):
 
     @property
     def github_mcp_ready(self) -> bool:
-        """True only when GitHub is enabled AND a token is present (fail-safe)."""
-        return bool(self.github_mcp_enabled and self.resolved_github_token)
+        """True only when GitHub is enabled AND a token is present AND — for http
+        mode — a URL is configured (fail-safe)."""
+        if not (self.github_mcp_enabled and self.resolved_github_token):
+            return False
+        if self.github_mcp_transport == "http" and not (self.github_mcp_url or "").strip():
+            return False
+        return True
 
     @field_validator("agent_checkpoint_backend")
     @classmethod

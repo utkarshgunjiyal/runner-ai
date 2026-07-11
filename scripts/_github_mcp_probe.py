@@ -34,9 +34,12 @@ async def main() -> int:
     from app.agent.mcp.composition import build_mcp_registry_manager
     from app.agent.tools.mcp_adapter import MCPAdapter
 
+    transport = os.environ.get("GITHUB_MCP_TRANSPORT", "http").strip().lower()
+    url = os.environ.get("GITHUB_MCP_URL", "https://api.githubcopilot.com/mcp/")
     image = os.environ.get("GITHUB_MCP_IMAGE", "ghcr.io/github/github-mcp-server:v0.6.0")
-    config = build_github_mcp_server_config(token=token, image=image)
-    print(f"GitHub MCP server: {config.name}  image={image}  read_only=True")
+    config = build_github_mcp_server_config(token=token, transport=transport, url=url, image=image)
+    where = url if transport == "http" else image  # neither contains the token
+    print(f"GitHub MCP server: {config.name}  transport={transport}  target={where}  read_only=True")
     print(f"Allowlisted read tools: {', '.join(config.tool_allowlist)}")
 
     manager, conn = await build_mcp_registry_manager(

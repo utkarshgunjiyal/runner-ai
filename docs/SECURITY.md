@@ -148,8 +148,17 @@ per-user OAuth. Security properties and boundaries:
   visible to anyone who can use the deployment. Prefer a **low-privilege,
   read-only** token — `public_repo`, a test account, or public-repo-only access.
   **Never** grant write/admin scopes.
-- **Secret handling.** The token is read from the environment only. It is excluded
-  from `repr`/`str`, from `MCPServerConfig.public_metadata()`, from every
+- **No host Docker socket (Phase 46.2.1).** The recommended transport is the
+  official **remote Streamable HTTP** endpoint (`GITHUB_MCP_TRANSPORT=http`,
+  default), reached over outbound HTTPS. Runner.ai therefore **never mounts
+  `/var/run/docker.sock`, never installs a Docker CLI in the backend, never runs a
+  privileged container, and never uses Docker-in-Docker** — mounting the host
+  socket would grant effective host root. The optional `stdio` mode runs a local
+  Docker process and is a developer-only mode for a host that already has Docker.
+- **Secret handling.** The token is read from the environment only. In http mode it
+  is sent only in the `Authorization: Bearer` header (never in the URL); in stdio
+  mode only in the process environment. It is excluded from `repr`/`str`, from
+  `MCPServerConfig.public_metadata()` (which omits `url` and `headers`), from every
   `ToolSpec`/`RuntimeEvent`, from adapter results and errors (safe, vendor-free
   messages only), and from the `/integrations` API. It is never committed
   (`.env.example` has placeholders; `.gitignore` excludes `.env`), printed, or
