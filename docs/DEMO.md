@@ -91,6 +91,15 @@ show it end-to-end:
 3. **Thread-wide question.** Ask something like `What do these documents cover?`
    Retrieval filters Qdrant by `user_id` and the thread's full owned document
    set — no other thread's or user's documents are reachable.
+3b. **Document inventory (deterministic, no retrieval).** In a **brand-new, empty**
+   thread ask `What documents are uploaded?` The agent answers **"There are
+   currently no uploaded documents in this conversation. Upload a PDF to ask
+   questions about it."** — with **no résumé content, no `E#` citations, and no
+   retrieval activity** in the runtime inspector (Phase 46.1). This is a
+   deterministic fast path: inventory questions list the thread's own document
+   records (the same records the selector shows) and never run vector search.
+   Upload a PDF and repeat → it lists `filename — Ready`; open another empty thread
+   and repeat → empty again (per-thread isolation).
 4. **Single-document question.** Reference one file by name (e.g.
    `Summarize invoice_2024.pdf`). The resolver matches it to a stable
    `document_id` and retrieval is scoped to just that document.

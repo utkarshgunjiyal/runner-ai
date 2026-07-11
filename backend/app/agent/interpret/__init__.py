@@ -10,7 +10,10 @@ the DocumentResolver; eligibility belongs to the connector layer. An LLM is neve
 used for interpretation here (deterministic evidence first).
 """
 
-from app.agent.interpret.interpreter import interpret_request
+from app.agent.interpret.interpreter import (
+    interpret_request,
+    is_document_inventory_request,
+)
 from app.agent.interpret.models import (
     ActionType,
     ConnectorScope,
@@ -21,6 +24,7 @@ from app.agent.interpret.models import (
 
 __all__ = [
     "interpret_request",
+    "is_document_inventory_request",
     "ActionType",
     "ConnectorScope",
     "DocumentScope",

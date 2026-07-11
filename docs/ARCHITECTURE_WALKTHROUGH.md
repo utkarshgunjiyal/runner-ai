@@ -46,6 +46,23 @@ Qdrant — the most relevant document chunks, under an explicit **context budget
 caps token cost. *Trade-off:* retrieval can miss evidence; the evaluator/repair
 loop can request more context.
 
+### 3a. Document-inventory fast path (Phase 46.1)
+A "what documents are uploaded?" style question is a **listing** request, not a
+content query, so the orchestrator answers it deterministically **before** the
+scope gate, capability retrieval, planner, document chunk retrieval, embeddings,
+reranker, and the final LLM. `is_document_inventory_request` (pattern matching, no
+LLM) detects it — excluding content/management phrasings
+(summarize/compare/search/upload/delete/select) — and the handler lists the active
+thread's own document records via `document_service.list_thread_documents`
+(`user_id` + `thread_id` scoped; the same records the UI selector shows). The
+result carries **no evidence and no tool outputs**, so no unrelated content and no
+internal `E#` id can leak, and an empty thread returns an explicit "no documents"
+message. *Why:* listing files is a metadata question; routing it through vector
+search is both incorrect (it can surface another thread's résumé) and wasteful.
+*Trade-off:* one deterministic pattern check up front; unusual phrasings simply
+fall through to the normal path. See
+[`THREAD_DOCUMENT_MODEL.md`](./THREAD_DOCUMENT_MODEL.md).
+
 ### 3b. Thread/document scoping + connector eligibility (Phase 43)
 Before planning, the request is scoped to **one user's** conversation and
 documents. Auth supplies `user_id` (never client-asserted); the thread is

@@ -33,6 +33,7 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent.evaluation.engine import attach_evaluation_report
+from app.agent.interpret import is_document_inventory_request
 from app.agent.llm.final_provider import (
     FinalAnswer,
     FinalAnswerProvider,
@@ -165,12 +166,19 @@ class AgentOrchestrator:
         repair_runtime: RepairRuntimeLike | None = None,
         max_repair_rounds: int = 1,
         scope_gate=None,
+        document_inventory_fn=None,
     ) -> None:
         self._context_engine = context_engine
         # Phase 43: an optional scope gate resolves document references (and can
         # pause for a genuine document-selection clarification) before execution.
         # Default None → byte-identical to before.
         self._scope_gate = scope_gate
+        # Phase 46.1: an optional async ``(user_id, thread_id) -> list[dict]`` that
+        # returns the ACTIVE thread's own document records (ownership-scoped, all
+        # statuses). Used only by the deterministic document-inventory fast path,
+        # which bypasses retrieval/planner/LLM entirely. Default None → no fast
+        # path (byte-identical to before).
+        self._document_inventory_fn = document_inventory_fn
         self._behavior_gate = behavior_gate
         self._direct_runtime = direct_runtime
         self._planner_runtime = planner_runtime
@@ -215,6 +223,18 @@ class AgentOrchestrator:
             providers=run_context.metadata.get("context_providers"),
             context_size=len(run_context.working_context),
         )
+
+        # 1a. Document inventory fast path (Phase 46.1). A deterministic listing
+        # request ("what documents are uploaded?") is answered by listing the
+        # active thread's OWN document records — bypassing the scope gate,
+        # behavior gate, capability retrieval, planner, document chunk retrieval,
+        # embeddings, reranker, and the final LLM. This both fixes the routing
+        # defect (such a request must never trigger document-content retrieval)
+        # and guarantees no stale/foreign evidence or E# ids can appear.
+        if self._document_inventory_fn is not None and is_document_inventory_request(
+            user_request
+        ):
+            return await self._document_inventory_result(run_context, emit)
 
         # 1b. Scope Gate (Phase 43) — resolve document references before execution.
         # An ambiguous/unauthorized reference pauses the run for a genuine
@@ -564,6 +584,89 @@ class AgentOrchestrator:
                 "document_candidates": decision.candidates,
                 "document_scope": decision.metadata.get("document_scope"),
                 "clarification_needed": True,
+            },
+        )
+
+    async def _document_inventory_result(self, run_context: RunContext, emit) -> AgentRunResult:
+        """Deterministic document-inventory answer (Phase 46.1).
+
+        Lists the ACTIVE thread's own document records (ownership-scoped by
+        user_id + thread_id) via the injected inventory function, formats them
+        deterministically, and returns a COMPLETED result — with NO evidence, NO
+        tool outputs, NO retrieval, NO planner, and NO LLM. The evidence list stays
+        empty, so no stale/foreign content and no E# citations can appear."""
+        from app.agent.documents import format_document_inventory
+
+        documents: list[dict] = []
+        if run_context.thread_id:
+            documents = list(
+                await self._document_inventory_fn(run_context.user_id, run_context.thread_id) or []
+            )
+        text = format_document_inventory(documents)
+
+        # Safe routing/runtime metadata (no filenames, no content).
+        run_context.metadata["resolved_intent"] = "document_inventory"
+        run_context.metadata["deterministic_fast_path"] = True
+        run_context.metadata["document_count"] = len(documents)
+        run_context.metadata["runtime_outcome"] = RuntimeOutcome.COMPLETED.value
+        from app.logging_config import get_logger
+
+        get_logger("orchestrator").info(
+            "orchestrator.document_inventory",
+            extra={
+                "resolved_intent": "document_inventory",
+                "deterministic_fast_path": True,
+                "document_count": len(documents),
+            },
+        )
+
+        # Live-stream the deterministic text so streaming and non-streaming
+        # produce the same answer (emit is a no-op without a sink).
+        if emit.streaming:
+            await emit(E.ANSWER_STARTED)
+            if text:
+                await emit(E.ANSWER_CHUNK, text=text)
+            await emit(
+                E.ANSWER_COMPLETED,
+                text=text,
+                provider="deterministic-inventory",
+                model="document-inventory-1",
+            )
+
+        answer = FinalAnswer(
+            text=text,
+            used_citations=[],
+            provider="deterministic-inventory",
+            model="document-inventory-1",
+            finish_reason="stop",
+            metadata={
+                "grounded": True,
+                "deterministic_fast_path": True,
+                "resolved_intent": "document_inventory",
+                "document_count": len(documents),
+                "evidence_used": 0,
+                "tool_outputs_used": 0,
+            },
+        )
+        attach_final_answer(run_context, answer)
+
+        final_prompt = self._final_context_builder.build(run_context)
+        return AgentRunResult(
+            run_id=run_context.run_id,
+            user_id=run_context.user_id,
+            thread_id=run_context.thread_id,
+            behavior_path="direct",
+            answer=answer,
+            final_prompt=final_prompt,
+            run_context=run_context,
+            runtime_outcome=RuntimeOutcome.COMPLETED,
+            metadata={
+                "runtime_outcome": RuntimeOutcome.COMPLETED.value,
+                "resolved_intent": "document_inventory",
+                "deterministic_fast_path": True,
+                "document_count": len(documents),
+                "provider": answer.provider,
+                "model": answer.model,
             },
         )
 

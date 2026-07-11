@@ -8,6 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field
 class Intent(str, Enum):
     CONVERSATION_FOLLOWUP = "conversation_followup"
     THREAD_MEMORY_QA = "thread_memory_qa"
+    # Deterministic document-inventory listing (Phase 46.1): "what documents are
+    # uploaded?" / "list my files". Answered by listing the thread's own document
+    # records — it must NOT trigger document-content retrieval.
+    DOCUMENT_INVENTORY = "document_inventory"
     DOCUMENT_QA = "document_qa"
     DOCUMENT_SUMMARY = "document_summary"
     DOCUMENT_COMPARISON = "document_comparison"

@@ -75,8 +75,8 @@ config-free and unit-testable without a database or credentials.
 | Field | Value |
 |---|---|
 | **Branch** | `v2-autonomous-platform` |
-| **Latest commit** | `V2 Phase 45: Final Frontend Polish & Demo UX` |
-| **Test count** | **814 backend** + **89 frontend** (Vitest) |
+| **Latest commit** | `V2 Phase 46.1: Deterministic Document Inventory Intent` |
+| **Test count** | **832 backend** + **89 frontend** (Vitest) |
 | **Python** | 3.11 (developed on 3.11.15) |
 | **Test command** | `cd backend && python -m pytest` |
 
@@ -655,6 +655,37 @@ router; styling is one design-token stylesheet.
   `threadSidebar`, `composer`, `sourceChips`, `chatShellLayout`; every prior
   behavioral test kept and green. Backend unchanged (814).
 
+### Phase 46.1 — Deterministic Document Inventory Intent
+Fixes a real routing/isolation defect: in a brand-new, empty thread, asking *"What
+documents are uploaded?"* misclassified as a document-content question, ran
+(effectively unscoped) document retrieval, and returned an old résumé with internal
+`E1` citations. **Root cause: routing** (each run already gets a fresh RunContext,
+so there is no cross-run stale-state bug) — the request must never reach retrieval.
+- **New deterministic intent.** `Intent.DOCUMENT_INVENTORY` +
+  `is_document_inventory_request(text)` (pattern/phrase matching, **no LLM**)
+  recognize inventory questions ("what documents are uploaded?", "which PDFs do I
+  have?", "how many documents are attached?", …) and **exclude** content/management
+  requests (summarize/compare/search/"what does it say"/upload/delete/select). The
+  interpreter classifies inventory with `document_scope=NONE`
+  (`needs_documents=False`), so the scope gate never resolves/retrieves for it.
+- **Orchestrator fast path.** Before the scope gate, behavior gate, capability
+  retrieval, planner, document chunk retrieval, embeddings, reranker, and final LLM,
+  `AgentOrchestrator._document_inventory_result` lists the **active thread's own
+  document records** via an injected `document_inventory_fn` and returns a COMPLETED
+  answer. Evidence and tool outputs stay **empty**, so no stale/foreign content and
+  no `E#` ids can appear. Streaming and non-streaming produce identical output.
+- **Ownership & same source as the UI.** The inventory fn is
+  `document_service.list_thread_documents(user_id, thread_id)` — the exact
+  ownership-scoped service the UI selector uses (all statuses). Filename + a safe
+  status label only (Ready / Pending / Indexing / Failed); never a UUID, storage
+  key, chunk id, or evidence id.
+- **Observability.** Safe metadata `resolved_intent=document_inventory`,
+  `deterministic_fast_path=true`, `document_count` (no filenames, no content).
+- **Tests.** +18 backend (832) — `test_document_inventory` (detector variants +
+  negatives + formatting + status labels) and `test_document_inventory_route`
+  (empty/one/many, thread & user isolation, no retrieval/planner, no `E#`,
+  streaming==non-streaming, and a state-leakage regression). Frontend unchanged (89).
+
 ---
 
 ## Runtime Pipeline
@@ -1094,6 +1125,7 @@ reason — most of the codebase relies on them.
 | **Phase 44.1 ✅** | **Source-Aware Comparison Output** | *Done.* Fixes the demo's blended two-document comparison. The comparison intent (interpretation + resolved `documents`) is carried on `FinalPrompt.metadata` (`is_comparison`, `comparison_documents`) into synthesis; the **deterministic fallback provider** now groups evidence per document and emits a source-separated answer — `Document N — filename` sections + `Similarities` + `Differences` + `Sources`, with filename+page citations, covering every selected document (empty ones stated explicitly) and never blending across documents. Non-comparison path byte-identical; no new planner/interpreter; frontend already renders multi-line answers. |
 | **Phase 44.2 ✅** | **Evidence Compression & Comparison Synthesis** | *Done.* Improves only the deterministic/offline fallback comparison. New pure `comparison_synthesis.py`: a maintainable category→keyword taxonomy compresses retrieved chunks into concise, category-grouped technical skills (whole-token matching, normalized wrapped lines, de-duplicated), excludes contact/education/extracurricular/leadership noise, computes **concept-based** similarities/differences (not token lists), and cites **filename+page only** (no opaque `E#`). Output is bounded (no raw chunk dumps). Provider precedence, real-LLM path, retrieval, planner, checkpoint/resume, and frontend unchanged; non-comparison output byte-identical; streaming==non-streaming. |
 | **Phase 45 ✅** | **Final Frontend Polish & Demo UX** | *Done.* Frontend-only. Three-region **AI workspace** (conversations rail · chat · collapsed-by-default `RuntimeInspector`), design-token stylesheet, responsive (desktop columns → tablet inspector sheet → mobile sidebar drawer, overflow-free at 1440/834/390 px), a11y (focus-visible, `aria-*`, reduced-motion). Sidebar skeleton/empty/error+retry + relative time (`useThreads` additive `loading`/`error`); composer scope chips + Enter/Shift+Enter/Stop; answers lift `Sources` into filename+page **chips** (no `E#`); static **truthful** Integrations (Gmail/GitHub *coming next*, MCP *available* — no fake OAuth). No backend/planner/retrieval/ownership/checkpoint change; no new dependency. +26 frontend tests (89). |
+| **Phase 46.1 ✅** | **Deterministic Document Inventory Intent** | *Done.* Fixes an empty-thread routing/isolation bug where "what documents are uploaded?" ran document retrieval and returned an old résumé with `E1`. New `Intent.DOCUMENT_INVENTORY` + `is_document_inventory_request` (deterministic, no LLM) classify inventory questions (scope NONE) and exclude content/management requests. An orchestrator **fast path** lists the active thread's own document records (via `document_service.list_thread_documents`, same source as the UI) — bypassing scope gate, capability retrieval, planner, chunk retrieval, embeddings, reranker, and the final LLM — with empty evidence (no `E#`), safe status labels, filename-only, and identical streaming. Root cause was **routing** (fresh RunContext per run → no stale-state bug). +18 backend tests (832). |
 
 **Phase 41A current limitations (intentional scope boundary).** Real transports
 ship, but no MCP dependency/live server is required: `agent_mcp_enabled` defaults
@@ -1171,6 +1203,16 @@ provider (`AGENT_USE_REAL_LLM=true`) produces richer, fully prose comparisons fr
 the *same* comparison-marked prompt. Extraction depends on evidence carrying
 `filename`/`page` provenance. No live/paid API is called by the fallback or tests.
 
+**Phase 46.1 current limitations (intentional scope boundary).** Inventory
+detection is deterministic pattern/phrase matching (no LLM), tuned for ordinary
+English inventory phrasings; a very unusual phrasing may fall through to the normal
+path (which lists nothing sensitive for an empty thread, but would not use the fast
+path). The inventory listing depends on `document_service.list_thread_documents`
+(the same ownership-scoped records the UI shows); no new storage path is introduced.
+The latent retrieval-scoping weakness the bug exposed (an empty-thread document
+query reaching the user's broader corpus) is sidestepped for this intent by the fast
+path — a broader retrieval-scoping hardening is out of scope here.
+
 **Phase 45 current limitations (intentional scope boundary).** Frontend polish
 only — no backend behavior changed. The **Integrations** panel is **static and
 truthful**: real per-user **Gmail/GitHub OAuth is not implemented**, so those show
@@ -1186,8 +1228,12 @@ library, by choice). The dev-user auth stub is unchanged (documented in
 
 ## Test Status
 
-- **Backend:** **814 passing** (1 benign Starlette deprecation warning),
-  `cd backend && python -m pytest`, ~2–3s. Phase 44 adds coverage for the hardened
+- **Backend:** **832 passing** (1 benign Starlette deprecation warning),
+  `cd backend && python -m pytest`, ~2–3s. Phase 46.1 adds `test_document_inventory`
+  (deterministic detector variants/negatives, formatting, status labels) and
+  `test_document_inventory_route` (fast path: empty/one/many, thread & user
+  isolation, no retrieval/planner, no `E#`, streaming==non-streaming, state-leakage
+  regression). Phase 44 adds coverage for the hardened
   ambiguity policy, per-document balanced retrieval, source-aware final context,
   the BM25 lexical reranker, the intent capability gate, and the safe
   `document_storage_unavailable` error; Phase 44.1 adds `test_comparison_output.py`

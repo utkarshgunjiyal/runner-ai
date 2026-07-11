@@ -309,6 +309,42 @@ untouched.
 
 ---
 
+## Document inventory (deterministic route, Phase 46.1)
+
+"What documents are uploaded?" is a **listing** question, not a document-content
+question — it must be answered from the thread's own document records, never by
+searching document chunks. A deterministic fast path guarantees this:
+
+- **Deterministic detection.** `is_document_inventory_request` (pattern/phrase
+  matching, **no LLM**) recognizes inventory phrasings ("what documents are
+  uploaded?", "which PDFs do I have?", "how many documents are attached?", "list my
+  files", …) and **excludes** content/management requests
+  (summarize/compare/search/"what does it say"/upload/delete/select). The
+  interpreter classifies it as `Intent.DOCUMENT_INVENTORY` with
+  `document_scope=NONE`.
+- **Retrieval is bypassed on purpose.** The orchestrator answers inventory
+  *before* the scope gate, behavior gate, capability retrieval, planner, document
+  chunk retrieval, embeddings, reranker, and the final LLM. Listing files is a
+  metadata question; running vector search for it is both wrong (it can surface
+  unrelated content) and unnecessary.
+- **User + thread isolation.** The listing comes from
+  `document_service.list_thread_documents(user_id, thread_id)` — the **same
+  ownership-scoped records the UI selector uses** — so it only ever shows the
+  authenticated user's documents in the active thread. Another user's or another
+  thread's documents can never appear.
+- **Empty-state behavior.** An empty thread returns exactly: *"There are currently
+  no uploaded documents in this conversation. Upload a PDF to ask questions about
+  it."* — no résumé content, no citations.
+- **Stale-evidence prevention.** Each run builds a fresh `RunContext`; the inventory
+  fast path attaches **no evidence and no tool outputs**, so nothing from a prior
+  run or another thread — and no internal `E#` evidence id — can leak into the
+  answer. The response reflects the active thread's records at request time.
+- **Safe output only.** Filename + a friendly status label (Ready / Pending /
+  Indexing / Failed). Never a document UUID, storage key, chunk id, or raw
+  repository object.
+
+---
+
 ## Thread switching semantics
 
 A thread is a hard scope boundary. Switching threads changes `thread_id`, and

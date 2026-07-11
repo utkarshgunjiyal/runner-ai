@@ -49,6 +49,52 @@ _WRITE_CUES = (
 
 _PAGE_RE = re.compile(r"\bpage[s]?\s+(\d{1,4})(?:\s*(?:-|to|and|,)\s*(\d{1,4}))?", re.IGNORECASE)
 
+# --- Document inventory intent (Phase 46.1) --------------------------------
+# Deterministic detection of "what documents are uploaded?" style questions —
+# a LISTING of the thread's own documents, NOT a content query. These must route
+# to the deterministic inventory handler and never trigger document retrieval.
+_INVENTORY_SUBJECT = r"(?:documents?|files?|pdfs?|docs?)"
+_INVENTORY_PATTERNS = (
+    # "how many documents/files ..."
+    re.compile(r"\bhow many\s+" + _INVENTORY_SUBJECT + r"\b", re.IGNORECASE),
+    # "list / show ... documents/files"
+    re.compile(r"\b(?:list|show)\b[^?.!]*\b" + _INVENTORY_SUBJECT + r"\b", re.IGNORECASE),
+    # "what/which documents ... uploaded/attached/available/(do) i have/in this thread"
+    re.compile(
+        r"\b(?:what|which)\b[^?.!]*\b" + _INVENTORY_SUBJECT + r"\b[^?.!]*\b"
+        r"(?:uploaded|attached|available|do i have|i have|are there|"
+        r"in (?:this|the) (?:thread|conversation|chat))",
+        re.IGNORECASE,
+    ),
+    # "do I have any documents ..."
+    re.compile(r"\bdo i have\b[^?.!]*\b" + _INVENTORY_SUBJECT + r"\b", re.IGNORECASE),
+    # "... documents (are) uploaded/attached/available"
+    re.compile(
+        r"\b" + _INVENTORY_SUBJECT + r"\b[^?.!]*\b(?:uploaded|attached|available)\b",
+        re.IGNORECASE,
+    ),
+)
+# If any of these appear, the request is a content/action request about documents,
+# NOT an inventory listing — so it must not be classified as inventory.
+_INVENTORY_NEGATIVES = (
+    "summarize", "summarise", "summary", "compare", "comparison", "versus", " vs ",
+    "delete", "remove", "upload ", "select", "open ", "say", "says", "about",
+    "search", "find", "inside", "content of", "tell me about", "explain",
+)
+
+
+def is_document_inventory_request(user_request: str) -> bool:
+    """Deterministically decide whether a request is a document-INVENTORY listing
+    (list/count the thread's documents), as opposed to a document-content request.
+
+    Language-robust over ordinary English phrasings; no LLM, no model call. A
+    content/action cue (summarize/compare/search/delete/upload/select/"say"/…)
+    disqualifies it, so content and management requests never misroute here."""
+    text = f" {(user_request or '').lower().strip()} "
+    if any(neg in text for neg in _INVENTORY_NEGATIVES):
+        return False
+    return any(pattern.search(text) for pattern in _INVENTORY_PATTERNS)
+
 # Explicit, durable preference-save intent only (Phase 44). Casual statements,
 # persistence-test messages, and one-off facts must NOT match.
 _PREFERENCE_CUES = (
@@ -119,6 +165,19 @@ def interpret_request(
     (revalidated by the resolver, never trusted as authorization here)."""
     text = f" {(user_request or '').lower().strip()} "
     selected = list(selected_document_ids or [])
+
+    # Document-inventory listing (Phase 46.1): a deterministic LISTING request,
+    # not a content query. Classify it with NO document scope so downstream never
+    # resolves or retrieves document chunks. An explicit UI document selection is a
+    # deliberate content scope and takes precedence over the text heuristic.
+    if not selected and is_document_inventory_request(user_request):
+        return RequestInterpretation(
+            intents=[Intent.DOCUMENT_INVENTORY],
+            document_scope=DocumentScope.NONE,
+            confidence=1.0,
+            resolution_source="deterministic",
+        )
+
     text_pages = _extract_pages(text)
     page_explicit = bool(text_pages)
     pages = list(page_numbers or []) or text_pages

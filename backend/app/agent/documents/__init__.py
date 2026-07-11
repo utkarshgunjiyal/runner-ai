@@ -17,6 +17,7 @@ from app.agent.documents.resolver import (
     DocumentResolutionStatus,
     resolve_documents,
 )
+from app.agent.documents.inventory import format_document_inventory, status_label
 from app.agent.documents.retrieval import (
     PER_DOCUMENT_CHUNK_QUOTA,
     balanced_per_document_retrieve,
@@ -31,4 +32,6 @@ __all__ = [
     "build_scoped_document_retriever",
     "balanced_per_document_retrieve",
     "PER_DOCUMENT_CHUNK_QUOTA",
+    "format_document_inventory",
+    "status_label",
 ]

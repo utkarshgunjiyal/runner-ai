@@ -136,6 +136,7 @@ async def lifespan(app: FastAPI):
     # gate resolves document references (and can pause for a genuine document
     # picker); the recorder validates thread ownership and persists messages.
     scope_gate = _build_scope_gate()
+    document_inventory_fn = _build_document_inventory_fn()
     capability_executor = _build_capability_executor()
     configure_run_recorder(_build_run_recorder())
 
@@ -146,6 +147,7 @@ async def lifespan(app: FastAPI):
         mcp_registry_manager=mcp_registry_manager,
         demo_mode=settings.demo_mode,
         scope_gate=scope_gate,
+        document_inventory_fn=document_inventory_fn,
         connector_eligibility=True,
         capability_executor=capability_executor,
     )
@@ -231,6 +233,29 @@ def _build_scope_gate():
         recent_document_fn=recent_document_fn,
         connectors_fn=connectors_fn,
     )
+
+
+def _build_document_inventory_fn():
+    """Compose the Phase 46.1 document-inventory lister from the SAME V1.5 service
+    the UI document selector uses (`document_service.list_thread_documents`), so the
+    agent's inventory answer and the UI list derive from identical records. Scoped
+    by user_id + thread_id; returns ALL statuses (Ready/Indexing/Failed) as safe
+    fields only — never storage keys, chunk ids, or raw repository objects."""
+    from app.services import document_service
+
+    async def document_inventory_fn(user_id, thread_id):
+        docs = await document_service.list_thread_documents(user_id, thread_id)
+        return [
+            {
+                "document_id": str(d["_id"]),
+                "filename": d.get("filename"),
+                "status": d.get("status"),
+                "created_at": d.get("created_at"),
+            }
+            for d in docs
+        ]
+
+    return document_inventory_fn
 
 
 def _build_run_recorder():
