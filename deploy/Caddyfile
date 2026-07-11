@@ -40,8 +40,9 @@
 
 	# Prometheus metrics must never be reachable from the public edge, even if
 	# METRICS_ENABLED=true on the backend. Answer 404 before any proxying.
-	@metrics path /metrics /metrics/*
-	respond @metrics 404
+	handle /metrics* {
+        respond 404
+    }
 
 	# Optional private-demo authentication (Option C). Empty by default; add a
 	# `basic_auth` block in deploy/auth.conf to lock the demo behind a password.
