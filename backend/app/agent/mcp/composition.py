@@ -90,6 +90,7 @@ async def build_mcp_registry_manager(
     sleep=None,
     idle_timeout: float | None = None,
     discover: bool = True,
+    spec_transform=None,
 ):
     """Compose the full transport → registry stack from trusted configs.
 
@@ -115,7 +116,9 @@ async def build_mcp_registry_manager(
         )
         client = TransportMCPClient(conn_manager)
 
-    manager = MCPRegistryManager(tool_registry or ToolRegistry(), client)
+    manager = MCPRegistryManager(
+        tool_registry or ToolRegistry(), client, spec_transform=spec_transform
+    )
     for config in configs:
         if not config.enabled:
             continue

@@ -135,6 +135,32 @@ Filenames are only for matching/display; retrieval always uses the stable
 server-side (see [`SECURITY.md`](./SECURITY.md)). Details:
 [`THREAD_DOCUMENT_MODEL.md`](./THREAD_DOCUMENT_MODEL.md).
 
+## GitHub read-only connector (Phase 46.2)
+
+Optional. Enable with `GITHUB_MCP_ENABLED=true` + a **low-privilege read-only**
+token (`GITHUB_MCP_TOKEN` or `GITHUB_PERSONAL_ACCESS_TOKEN`) at the deployment
+level (see [GITHUB_MCP.md](./GITHUB_MCP.md)). Everything goes through the real MCP
+stack — no direct GitHub REST.
+
+- **Missing config** → Runner.ai starts normally; the Integrations panel shows
+  GitHub **Not configured**; document/chat flows work; a GitHub request gets a safe
+  unavailable result (GitHub tools are excluded before planning — no doc fallback).
+- **Connected** → the Integrations panel shows **Connected** with the enabled
+  read-only capabilities; **no token is ever shown**.
+- Ask **"List my GitHub repositories."** → real repositories, safe links, no
+  invented data; the runtime inspector shows the GitHub read tool.
+- Ask **"Show details for utkarshgunjiyal/runner-ai."**, **"List open issues in
+  …"**, **"List open pull requests in …"** → real, normalized results (or a clear
+  "none" response).
+- Ask **"Create a GitHub issue."** → no write tool exists; a truthful read-only
+  limitation, no external change.
+- **Stop the MCP server** and repeat a GitHub request → safe failure, no crash, no
+  fallback to document retrieval.
+
+> Deployment-scoped, **not** per-user OAuth — every user of the deployment shares
+> the configured account, so restrict access. Live verification:
+> `./scripts/verify-github-mcp.sh` (opt-in; never prints the token; no writes).
+
 ## Workspace UI walkthrough (Phase 45)
 
 The frontend is a three-region **AI workspace**, worth showing on camera:

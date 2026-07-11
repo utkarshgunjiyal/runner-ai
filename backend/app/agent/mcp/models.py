@@ -70,6 +70,12 @@ class MCPServerConfig(BaseModel):
     timeout_seconds: float = Field(default=30.0, gt=0)
     retry: MCPRetryConfig = Field(default_factory=MCPRetryConfig)
     metadata: dict = Field(default_factory=dict)
+    # Optional read-only allowlist (Phase 46.2): when set, ONLY these discovered
+    # tool names are registered as capabilities; every other advertised tool
+    # (including any write tool) is excluded before it can ever become eligible.
+    # ``None`` = register all discovered tools (unchanged behavior). Trusted config
+    # only — a server can never widen its own allowlist.
+    tool_allowlist: list[str] | None = None
 
     @field_validator("server_id")
     @classmethod

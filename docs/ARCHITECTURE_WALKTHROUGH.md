@@ -174,6 +174,23 @@ transport-agnostic. *Why:* extend capabilities without embedding a vendor SDK in
 the runtime. *Trade-off:* transport/lifecycle code, isolated behind a Protocol so
 the runtime never sees it.
 
+### 12b. GitHub read-only MCP connector (Phase 46.2)
+A **real GitHub account** is reached through the existing MCP stack — no direct
+GitHub REST. The official `github-mcp-server` (pinned, stdio, `--read-only`) is
+registered as a trusted server; a **read-only allowlist** on the server config lets
+discovery register only repository/issue/PR read tools (all write/admin tools are
+excluded before they can become eligible). A `spec_transform` enriches each read
+tool; a per-server `result_normalizers` seam on the MCP adapter converts raw
+payloads into stable Repository/Issue/PullRequest structures with bounded excerpts,
+so the answer is grounded only in normalized data. A `github` server id yields a
+`github` provider tag, so connector eligibility gates the tools by the deployment's
+real MCP health — and `DirectRuntime` now uses RunContext-aware retrieval so this
+applies on the direct path too. `GET /integrations` exposes safe live status
+(no token). *Why:* prove a real external connector end-to-end without leaking
+credentials or bypassing MCP. *Trade-off:* deployment-scoped shared identity, not
+per-user OAuth (restrict access; see [SECURITY.md](./SECURITY.md) and
+[GITHUB_MCP.md](./GITHUB_MCP.md)).
+
 ### 13. Frontend state machine + workspace (Phase 45)
 The SPA is a thin transport + presentation layer: a pure reducer maps
 `RuntimeEvent`s to an explicit run state (`idle → streaming →

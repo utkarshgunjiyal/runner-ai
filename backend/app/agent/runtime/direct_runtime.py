@@ -88,9 +88,17 @@ class DirectRuntime:
             )
 
         # 3. Retrieve relevant capabilities (top matches only, not the registry).
-        matches = self._retriever.retrieve(
-            CapabilityRetrievalRequest(query=run_context.user_request, top_k=self._top_k)
-        ).matches
+        # Prefer the RunContext-aware retrieval so connector-eligibility and intent
+        # gating (Phase 43/44/46.2) apply on the DIRECT path too — an ineligible
+        # capability (e.g. an unavailable GitHub tool) must never be selected or
+        # executed. Retrievers without the run-context method fall back cleanly.
+        run_aware = getattr(self._retriever, "retrieve_for_run_context", None)
+        if callable(run_aware):
+            matches = run_aware(run_context, top_k=self._top_k).matches
+        else:
+            matches = self._retriever.retrieve(
+                CapabilityRetrievalRequest(query=run_context.user_request, top_k=self._top_k)
+            ).matches
 
         recovery: list[dict] = []
         if not matches:

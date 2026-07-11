@@ -57,7 +57,7 @@ __all__ = [
 ]
 
 
-def _default_sources(mcp_registry_manager, sources) -> list[CapabilitySource]:
+def _default_sources(mcp_registry_manager, sources, mcp_result_normalizers=None) -> list[CapabilitySource]:
     """The default capability sources: internal, plus optional MCP.
 
     An explicit ``sources`` list fully overrides the defaults. Otherwise the
@@ -68,7 +68,9 @@ def _default_sources(mcp_registry_manager, sources) -> list[CapabilitySource]:
         return list(sources)
     result: list[CapabilitySource] = [InternalCapabilitySource()]
     if mcp_registry_manager is not None:
-        result.append(MCPCapabilitySource(mcp_registry_manager))
+        result.append(
+            MCPCapabilitySource(mcp_registry_manager, result_normalizers=mcp_result_normalizers)
+        )
     return result
 
 
@@ -77,6 +79,7 @@ def build_capability_platform(
     mcp_registry_manager=None,
     sources: list[CapabilitySource] | None = None,
     registry: ToolRegistry | None = None,
+    mcp_result_normalizers=None,
 ) -> UnifiedCapabilityRegistry:
     """Compose capability sources into a ``UnifiedCapabilityRegistry`` (sync).
 
@@ -86,7 +89,7 @@ def build_capability_platform(
     its shared ``tool_registry``.
     """
     unified = UnifiedCapabilityRegistry(registry=registry)
-    for source in _default_sources(mcp_registry_manager, sources):
+    for source in _default_sources(mcp_registry_manager, sources, mcp_result_normalizers):
         unified.mount_preloaded(source)
     return unified
 
@@ -127,6 +130,7 @@ def build_default_runtime(
     mcp_registry_manager=None,
     capability_sources: list[CapabilitySource] | None = None,
     capability_registry: UnifiedCapabilityRegistry | None = None,
+    mcp_result_normalizers=None,
 ) -> AgentOrchestrator:
     """Construct and wire the default runtime, returning an AgentOrchestrator.
 
@@ -156,7 +160,8 @@ def build_default_runtime(
         executor = capability_executor or InternalCapabilityExecutor()
     else:
         platform = capability_registry or build_capability_platform(
-            mcp_registry_manager=mcp_registry_manager, sources=capability_sources
+            mcp_registry_manager=mcp_registry_manager, sources=capability_sources,
+            mcp_result_normalizers=mcp_result_normalizers,
         )
         registry = platform.tool_registry
         executor = _executor_for(platform.executors_by_kind(), capability_executor)

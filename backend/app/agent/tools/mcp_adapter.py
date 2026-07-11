@@ -60,9 +60,21 @@ class MCPAdapter:
 
     kind_name = "mcp"
 
-    def __init__(self, manager: MCPRegistryManager, *, client: MCPClient | None = None) -> None:
+    def __init__(
+        self,
+        manager: MCPRegistryManager,
+        *,
+        client: MCPClient | None = None,
+        result_normalizers: dict | None = None,
+    ) -> None:
         self._manager = manager
         self._client = client or manager.client
+        # Optional per-server result normalizers (Phase 46.2):
+        # ``{server_id: (tool_name, MCPToolCallResult) -> (output_dict, [EvidenceItem])}``.
+        # Turns a raw MCP payload into a stable, bounded, secret-free structure +
+        # grounded evidence before it enters the final context. ``None``/absent →
+        # the default text-block normalization (unchanged).
+        self._result_normalizers = result_normalizers or {}
 
     async def execute(self, tool: ToolSpec, args: dict) -> AdapterResult:
         capability_id = tool.id
@@ -140,6 +152,17 @@ class MCPAdapter:
                 metadata={**provenance, "mcp_error_code": "mcp_tool_invocation_error",
                           "safe_message": MCPToolInvocationError.safe_message},
             )
+
+        # Per-server normalization (Phase 46.2): convert the raw payload into a
+        # stable, bounded, secret-free structure + grounded evidence. A normalizer
+        # failure degrades to the default text-block handling (never leaks/raises).
+        normalizer = self._result_normalizers.get(binding.server_id)
+        if normalizer is not None:
+            try:
+                output, evidence = normalizer(binding.tool_name, result)
+                return AdapterResult.ok(output=output, evidence=evidence, metadata=provenance)
+            except Exception:  # noqa: BLE001 - never leak a normalization bug/secret
+                pass
 
         text_blocks = [
             block.get("text", "")

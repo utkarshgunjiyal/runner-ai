@@ -141,6 +141,7 @@ export function ChatShell({ baseUrl = '' }: { baseUrl?: string }) {
         activeThreadId={threads.activeThreadId}
         loading={threads.loading}
         error={threads.error}
+        baseUrl={baseUrl}
         onSelect={onSelectThread}
         onNew={() => void onNewThread()}
         onRetry={() => void refreshThreads()}

@@ -124,13 +124,15 @@ are lifted into compact **source chips** (filename + page); bare evidence ids
 (`E1`, `E7`, …) are never rendered as sources. Answer text is safe structured text
 — no untrusted/dynamic HTML is injected.
 
-### Integrations (honest status)
-`IntegrationsPanel` is **static and truthful**: **GitHub** and **Gmail** show
-*Not connected — coming next* (no connect action that could imply a live OAuth
-session), and **MCP Runtime** shows *Available* (infrastructure ready; external
-MCP servers can be registered when configured). No frontend connector API exists
-yet, so the panel makes **no live calls** and never claims a connection, account
-access, or send capability.
+### Integrations (live GitHub status — Phase 46.2)
+`IntegrationsPanel` now fetches **live** status from `GET /integrations`
+(`api/integrationsClient.ts`) and renders reality: **GitHub** shows its real
+deployment connector state (*Not configured / Connecting / Connected / Degraded /
+Authentication failed / Unavailable*) with its enabled **read-only** capabilities
+and a **Refresh** action; **Gmail** stays truthfully *Coming next*; **MCP Runtime**
+reflects runtime availability. There is **no token input** in the browser (GitHub is
+configured at the deployment level), the panel never claims per-user OAuth, and any
+fetch failure degrades to a safe fallback that never shows a false "Connected".
 
 ### Streaming
 `POST /agent/run/stream` returns `text/event-stream`. `sseClient` reads the

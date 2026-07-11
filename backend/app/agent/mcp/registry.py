@@ -152,13 +152,26 @@ def convert_tool_definition(
 class MCPRegistryManager:
     """Discovers MCP tools and registers them as capabilities in a shared registry."""
 
-    def __init__(self, tool_registry: ToolRegistry, client: MCPClient) -> None:
+    def __init__(
+        self,
+        tool_registry: ToolRegistry,
+        client: MCPClient,
+        *,
+        spec_transform=None,
+    ) -> None:
         self._registry = tool_registry
         self._client = client
         self._servers: dict[str, MCPServerConfig] = {}
         self._server_tool_ids: dict[str, list[str]] = {}
         self._bindings: dict[str, MCPToolBinding] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        # Optional per-server ToolSpec enrichment (Phase 46.2). A trusted callable
+        # ``(MCPServerConfig, tool_name, ToolSpec) -> ToolSpec`` that adds provider/
+        # scope tags, richer retrieval metadata, timeouts, etc. Must preserve the
+        # spec id and never inject secrets. ``None`` → specs are used as converted.
+        self._spec_transform = spec_transform
+        # Per-server discovery stats (safe, secret-free) for observability/status.
+        self._discovery_stats: dict[str, dict] = {}
 
     # -- Accessors -----------------------------------------------------------
 
@@ -285,8 +298,23 @@ class MCPRegistryManager:
     ) -> list[tuple[ToolSpec, MCPToolBinding]]:
         out: list[tuple[ToolSpec, MCPToolBinding]] = []
         seen_ids: set[str] = set()
+        allowlist = set(config.tool_allowlist) if config.tool_allowlist is not None else None
+        discovered = 0
+        excluded = 0
         for definition in definitions:
+            discovered += 1
+            # Read-only allowlist (Phase 46.2): a server can advertise write tools
+            # (create issue, merge PR, push files, …); when an allowlist is set,
+            # only listed tools are ever registered — the rest are excluded here,
+            # before they can become eligible or reach the planner.
+            if allowlist is not None and definition.name not in allowlist:
+                excluded += 1
+                continue
             spec = convert_tool_definition(config, definition)
+            if self._spec_transform is not None:
+                spec = self._spec_transform(config, definition.name, spec)
+                if spec.id != mcp_capability_id(config.server_id, definition.name):
+                    raise MCPProtocolError("spec_transform must not change the capability id")
             if spec.id in seen_ids:
                 # One server advertised the same tool twice.
                 raise MCPProtocolError(f"duplicate MCP tool id in discovery: {spec.id}")
@@ -297,7 +325,16 @@ class MCPRegistryManager:
                 tool_name=definition.name,
             )
             out.append((spec, binding))
+        self._discovery_stats[config.server_id] = {
+            "discovered_tool_count": discovered,
+            "excluded_tool_count": excluded,
+            "allowed_tool_count": len(out),
+        }
         return out
+
+    def discovery_stats(self, server_id: str) -> dict:
+        """Safe, secret-free discovery counts for a server (observability/status)."""
+        return dict(self._discovery_stats.get(server_id, {}))
 
     def _remove_server_tools(self, server_id: str) -> None:
         for tool_id in self._server_tool_ids.get(server_id, []):

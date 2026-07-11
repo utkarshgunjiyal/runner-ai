@@ -29,6 +29,7 @@ from app.routes.agent import (
     get_current_user,
 )
 from app.routes.threads import router as threads_router
+from app.routes.integrations import router as integrations_router
 from app.deploy.startup_guard import check_startup_safety
 from app.agent.checkpoint.composition import select_checkpoint_store
 from app.agent.checkpoint.mongo_store import mongo_collection_from_uri
@@ -118,24 +119,59 @@ async def lifespan(app: FastAPI):
     # byte-identical. Route handlers are unchanged.
     mcp_connection_manager = None
     mcp_registry_manager = None
+    mcp_result_normalizers = None
+    # Phase 46.2: the GitHub read-only MCP connector reflects real health here. A
+    # GitHub connection failure must NOT block startup — document/chat flows keep
+    # working; GitHub simply reports its status truthfully.
+    github_state = None
+    server_configs = []
     if settings.agent_mcp_enabled:
+        server_configs.extend(load_trusted_mcp_server_configs())
+    if settings.github_mcp_ready:
+        from app.agent.github import build_github_mcp_server_config
+
+        server_configs.append(
+            build_github_mcp_server_config(
+                token=settings.resolved_github_token,
+                image=settings.github_mcp_image,
+                toolsets=settings.github_mcp_toolsets,
+                timeout_seconds=settings.github_mcp_timeout_seconds,
+            )
+        )
+
+    if server_configs:
+        from app.agent.github import github_result_normalizer, github_spec_transform
         from app.agent.mcp.composition import build_mcp_registry_manager
 
-        server_configs = load_trusted_mcp_server_configs()
-        if server_configs:
-            mcp_registry_manager, mcp_connection_manager = await build_mcp_registry_manager(
-                server_configs
-            )
-            logger.info(
-                "app.mcp_ready",
-                extra={"servers": [c.public_metadata() for c in server_configs]},
-            )
+        # Register without discovering, then discover each server best-effort so a
+        # single server's failure cannot abort startup.
+        mcp_registry_manager, mcp_connection_manager = await build_mcp_registry_manager(
+            server_configs, spec_transform=github_spec_transform, discover=False
+        )
+        mcp_result_normalizers = {"github": github_result_normalizer}
+        github_state = await _discover_mcp_servers(mcp_registry_manager, server_configs)
+        logger.info(
+            "app.mcp_ready",
+            extra={"servers": [c.public_metadata() for c in server_configs]},
+        )
+
+    # Install the GitHub status provider for the integrations API + connector
+    # eligibility (both read the same live state). Defaults to "not configured".
+    from app.agent.github.status import derive_state
+    from app.routes.integrations import configure_integrations
+
+    if github_state is None:
+        github_state = derive_state(configured=settings.github_mcp_enabled, connected=False,
+                                    error_code="not_configured" if not settings.github_mcp_ready else None)
+    _github_state_holder["state"] = github_state
+    configure_integrations(lambda: _github_state_holder["state"])
+    logger.info("app.github_ready", extra={"github_status": github_state.status})
 
     # Thread/document scope gate + run recorder (Phase 43). Composition root wires
     # the V1.5-backed callables; the runtime/routes stay config-free. The scope
     # gate resolves document references (and can pause for a genuine document
     # picker); the recorder validates thread ownership and persists messages.
-    scope_gate = _build_scope_gate()
+    scope_gate = _build_scope_gate(github_state_fn=lambda: _github_state_holder["state"])
     document_inventory_fn = _build_document_inventory_fn()
     capability_executor = _build_capability_executor()
     configure_run_recorder(_build_run_recorder())
@@ -145,6 +181,7 @@ async def lifespan(app: FastAPI):
     configure_agent_runtime(
         use_real_llm=settings.agent_use_real_llm,
         mcp_registry_manager=mcp_registry_manager,
+        mcp_result_normalizers=mcp_result_normalizers,
         demo_mode=settings.demo_mode,
         scope_gate=scope_gate,
         document_inventory_fn=document_inventory_fn,
@@ -177,10 +214,11 @@ async def lifespan(app: FastAPI):
     logger.info("app.shutdown")
 
 
-def _build_scope_gate():
+def _build_scope_gate(*, github_state_fn=None):
     """Compose the Phase 43 ScopeGate from V1.5 services (lazy, composition-root)."""
     from app.agent.connectors import InMemoryConnectorRegistry
     from app.agent.documents import build_scoped_document_retriever
+    from app.agent.github.status import build_github_connector_record
     from app.agent.runtime.scope_gate import ScopeGate
     from app.services import document_service
 
@@ -220,12 +258,19 @@ def _build_scope_gate():
             break
         return None
 
-    # Connectors: the shipped registry is empty (no per-user OAuth yet), so no
-    # connector-backed capabilities are eligible. Real registry deferred.
+    # Connectors: the shipped registry is empty (no per-user OAuth yet). Phase 46.2
+    # adds ONE deployment-scoped connector — GitHub — whose eligibility reflects the
+    # real MCP health. When GitHub is not configured/connected, no github connector
+    # is returned, so github capabilities are ineligible and never reach the planner.
     _registry = InMemoryConnectorRegistry()
 
     async def connectors_fn(user_id):
-        return await _registry.list_for_user(user_id)
+        records = await _registry.list_for_user(user_id)
+        if github_state_fn is not None:
+            record = build_github_connector_record(user_id, github_state_fn())
+            if record is not None:
+                records = [*records, record]
+        return records
 
     return ScopeGate(
         thread_documents_fn=thread_documents_fn,
@@ -304,6 +349,49 @@ def load_trusted_mcp_server_configs():
     return []
 
 
+# Live GitHub connector state (Phase 46.2), set at startup and read by the
+# integrations API + connector eligibility. A mutable holder so both readers see
+# the same value without a global rebind.
+_github_state_holder: dict = {"state": None}
+
+
+async def _discover_mcp_servers(manager, configs):
+    """Discover each registered MCP server best-effort and derive the GitHub state.
+
+    A discovery failure for ANY server is caught and logged safely (no token/URL)
+    so a single server cannot abort startup. Returns the GitHub ``GithubConnectorState``
+    when a github server is present, else ``None``."""
+    from app.agent.github.server import GITHUB_MCP_SERVER_ID
+    from app.agent.github.status import derive_state
+    from app.agent.mcp.errors import MCPError
+
+    github_state = None
+    for config in configs:
+        try:
+            specs = await manager.discover_server_tools(config.server_id)
+        except MCPError as exc:
+            logger.warning("app.mcp_discovery_failed", extra={
+                "server_id": config.server_id, "error_code": getattr(exc, "error_code", "mcp_error")})
+            if config.server_id == GITHUB_MCP_SERVER_ID:
+                github_state = derive_state(configured=True, connected=False,
+                                            error_code=getattr(exc, "error_code", "mcp_error"))
+            continue
+        except Exception:  # noqa: BLE001 - never leak; never abort startup
+            logger.warning("app.mcp_discovery_error", extra={"server_id": config.server_id})
+            if config.server_id == GITHUB_MCP_SERVER_ID:
+                github_state = derive_state(configured=True, connected=False, error_code="mcp_error")
+            continue
+        if config.server_id == GITHUB_MCP_SERVER_ID:
+            stats = manager.discovery_stats(config.server_id)
+            github_state = derive_state(
+                configured=True, connected=True,
+                capabilities=[s.name for s in specs],
+                discovered_tool_count=stats.get("discovered_tool_count", len(specs)),
+                allowed_tool_count=stats.get("allowed_tool_count", len(specs)),
+            )
+    return github_state
+
+
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
@@ -362,6 +450,7 @@ app.include_router(jobs_router)
 app.include_router(memory_router)
 app.include_router(agent_router)
 app.include_router(threads_router)
+app.include_router(integrations_router)
 
 
 @app.get("/")

@@ -133,6 +133,37 @@ services** (`app/services/*`); the V2 agent code (`app/agent/execution/executor.
 was made timezone-aware. On the current Python 3.11 runtime these do not warn;
 migrate the V1.5 services when that layer is next revised.
 
+## GitHub MCP connector (Phase 46.2)
+
+The GitHub read-only MCP connector is a **deployment-scoped** integration, not
+per-user OAuth. Security properties and boundaries:
+
+- **Deployment-scoped identity.** The configured GitHub token belongs to the
+  *deployment*, not to individual users. Every user of a deployment with GitHub
+  enabled effectively shares that one account. **Multi-user production exposure is
+  therefore unsafe** — access to a deployment with GitHub enabled must be
+  restricted (e.g. localhost, single-tenant, or authenticated behind Caddy basic
+  auth). Do not enable it on a shared, public, multi-user deployment.
+- **Private repositories.** If the token can read private repos, their metadata is
+  visible to anyone who can use the deployment. Prefer a **low-privilege,
+  read-only** token — `public_repo`, a test account, or public-repo-only access.
+  **Never** grant write/admin scopes.
+- **Secret handling.** The token is read from the environment only. It is excluded
+  from `repr`/`str`, from `MCPServerConfig.public_metadata()`, from every
+  `ToolSpec`/`RuntimeEvent`, from adapter results and errors (safe, vendor-free
+  messages only), and from the `/integrations` API. It is never committed
+  (`.env.example` has placeholders; `.gitignore` excludes `.env`), printed, or
+  logged. The optional live-verification script never prints it.
+- **Read-only enforcement.** Two independent layers: the server is launched
+  `--read-only`, and discovery registers only an explicit read-only **allowlist**
+  (`MCPServerConfig.tool_allowlist`). Write/admin tools can never be registered,
+  become eligible, reach the planner, or be offered to the LLM.
+- **Fail-safe.** With GitHub disabled/misconfigured, the connector is "Not
+  configured" and the rest of Runner.ai is unaffected; a connection failure never
+  crashes startup and never falls back to document retrieval for GitHub questions.
+
+See [GITHUB_MCP.md](./GITHUB_MCP.md) for setup, tools, and limitations.
+
 ## Reporting
 
 Treat this as a demo/interview project; there is no formal disclosure process.

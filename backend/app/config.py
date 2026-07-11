@@ -54,6 +54,37 @@ class Settings(BaseSettings):
     # configuration comes from trusted composition only (never user input).
     agent_mcp_enabled: bool = False
 
+    # -- GitHub read-only MCP connector (Phase 46.2) -------------------------
+    # Deployment-scoped GitHub integration through the official GitHub MCP server.
+    # Disabled unless BOTH a flag and a token are present. The token is a SECRET —
+    # read from the environment only, never committed, printed, logged, returned to
+    # the frontend, or placed in a ToolSpec/metadata. True multi-user OAuth is NOT
+    # implemented: the configured identity is shared by the deployment, so access to
+    # a deployment with this enabled must be restricted (see docs/SECURITY.md).
+    github_mcp_enabled: bool = False
+    # Accepts either GITHUB_MCP_TOKEN or the server's native GITHUB_PERSONAL_ACCESS_TOKEN.
+    github_mcp_token: str | None = Field(
+        default=None,
+        validation_alias="github_mcp_token",
+        repr=False,
+    )
+    github_personal_access_token: str | None = Field(default=None, repr=False)
+    # Pinned image reference (never a floating ``latest``); override per deployment.
+    github_mcp_image: str = "ghcr.io/github/github-mcp-server:v0.6.0"
+    github_mcp_toolsets: str = "repos,issues,pull_requests"
+    github_mcp_timeout_seconds: float = 45.0
+
+    @property
+    def resolved_github_token(self) -> str | None:
+        """The GitHub token from either accepted env var (secret; never logged)."""
+        token = self.github_mcp_token or self.github_personal_access_token
+        return token.strip() if token and token.strip() else None
+
+    @property
+    def github_mcp_ready(self) -> bool:
+        """True only when GitHub is enabled AND a token is present (fail-safe)."""
+        return bool(self.github_mcp_enabled and self.resolved_github_token)
+
     @field_validator("agent_checkpoint_backend")
     @classmethod
     def _validate_checkpoint_backend(cls, value: str) -> str:

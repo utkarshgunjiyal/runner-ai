@@ -13,6 +13,7 @@ export function ThreadSidebar({
   activeThreadId,
   loading = false,
   error = false,
+  baseUrl = '',
   onSelect,
   onNew,
   onRetry,
@@ -21,6 +22,7 @@ export function ThreadSidebar({
   activeThreadId: string | null;
   loading?: boolean;
   error?: boolean;
+  baseUrl?: string;
   onSelect: (id: string) => void;
   onNew: () => void;
   onRetry?: () => void;
@@ -99,7 +101,7 @@ export function ThreadSidebar({
         )}
       </div>
 
-      <IntegrationsPanel />
+      <IntegrationsPanel baseUrl={baseUrl} />
     </aside>
   );
 }

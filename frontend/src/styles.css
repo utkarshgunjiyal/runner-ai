@@ -203,6 +203,11 @@ body { margin: 0; background: var(--bg); color: var(--text); -webkit-font-smooth
 
 /* ---------------------------------------------------------- Integrations */
 .integrations { border-top: 1px solid var(--border); padding: var(--sp-3); }
+.integrations-head { display: flex; align-items: center; justify-content: space-between; }
+.integration-caps { list-style: none; margin: var(--sp-2) 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.integration-cap { font-size: 11px; color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+.integration-cap::before { content: "✓"; color: var(--ok); font-size: 10px; }
+.status-pill.error { color: var(--error); border-color: rgba(248, 113, 113, 0.4); }
 .integration-list { list-style: none; margin: var(--sp-2) 0 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
 .integration-item { display: flex; align-items: flex-start; gap: var(--sp-2); }
 .integration-icon { width: 22px; text-align: center; color: var(--text-2); font-size: 15px; flex: 0 0 auto; }

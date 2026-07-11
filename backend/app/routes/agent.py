@@ -112,6 +112,7 @@ _scope_gate = None
 _document_inventory_fn = None
 _connector_eligibility = False
 _capability_executor = None
+_mcp_result_normalizers = None
 
 
 def _get_orchestrator():
@@ -124,6 +125,7 @@ def _get_orchestrator():
         _orchestrator = build_default_runtime(
             use_real_llm=_use_real_llm,
             mcp_registry_manager=_mcp_registry_manager,
+            mcp_result_normalizers=_mcp_result_normalizers,
             answer_evaluator=evaluator,
             scope_gate=_scope_gate,
             document_inventory_fn=_document_inventory_fn,
@@ -137,6 +139,7 @@ def configure_agent_runtime(
     *,
     use_real_llm: bool = False,
     mcp_registry_manager=None,
+    mcp_result_normalizers=None,
     demo_mode: bool = False,
     scope_gate=None,
     document_inventory_fn=None,
@@ -154,8 +157,10 @@ def configure_agent_runtime(
     demo. It never activates unless explicitly passed true."""
     global _use_real_llm, _mcp_registry_manager, _demo_mode, _orchestrator, _coordinator
     global _scope_gate, _document_inventory_fn, _connector_eligibility, _capability_executor
+    global _mcp_result_normalizers
     _use_real_llm = bool(use_real_llm)
     _mcp_registry_manager = mcp_registry_manager
+    _mcp_result_normalizers = mcp_result_normalizers
     _demo_mode = bool(demo_mode)
     _scope_gate = scope_gate
     _document_inventory_fn = document_inventory_fn

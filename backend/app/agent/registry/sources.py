@@ -106,10 +106,13 @@ class MCPCapabilitySource(CapabilitySource):
     tool_kind = ToolKind.MCP
     strict_namespace = True
 
-    def __init__(self, manager, *, source_id: str = "mcp") -> None:
+    def __init__(self, manager, *, source_id: str = "mcp", result_normalizers=None) -> None:
         self.source_id = source_id
         self._manager = manager
         self._executor = None
+        # Optional per-server result normalizers passed to the MCPAdapter
+        # (Phase 46.2). Default None → unchanged generic MCP result handling.
+        self._result_normalizers = result_normalizers
 
     @property
     def manager(self):
@@ -140,5 +143,5 @@ class MCPCapabilitySource(CapabilitySource):
             return self._executor
         from app.agent.tools.mcp_adapter import MCPAdapter
 
-        self._executor = MCPAdapter(self._manager)
+        self._executor = MCPAdapter(self._manager, result_normalizers=self._result_normalizers)
         return self._executor
