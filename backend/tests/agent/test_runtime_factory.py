@@ -147,6 +147,108 @@ def test_internal_executor_bound_ids_cover_expected_capabilities():
 
 
 # --------------------------------------------------------------------------- #
+# Executor override composition (regression: MCP routing must survive an
+# internal-execution override — see the `unknown_capability` investigation).
+# --------------------------------------------------------------------------- #
+
+def _discovered_mcp_manager():
+    """A registry manager with one discovered GitHub MCP tool (fake client)."""
+    from app.agent.mcp.client import FakeMCPClient
+    from app.agent.mcp.models import (
+        MCPServerConfig,
+        MCPToolCallResult,
+        MCPToolDefinition,
+        MCPTransport,
+    )
+    from app.agent.mcp.registry import MCPRegistryManager
+    from app.agent.registry.registry import ToolRegistry
+
+    tooldef = MCPToolDefinition(
+        name="search_repositories", description="list repos",
+        input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
+    )
+    results = {("github", "search_repositories"): MCPToolCallResult(
+        success=True, content=[{"type": "text", "text": "repo list"}],
+        structured_content={"repos": ["a", "b"]})}
+    client = FakeMCPClient(tools={"github": [tooldef]}, results=results)
+    mgr = MCPRegistryManager(ToolRegistry(), client)
+    cfg = MCPServerConfig(server_id="github", name="github",
+                          transport=MCPTransport.STDIO, command=["srv"], timeout_seconds=5.0)
+    run(mgr.register_server(cfg))
+    run(mgr.discover_server_tools("github"))
+    return mgr
+
+
+def test_executor_override_alone_is_returned_verbatim():
+    # Internal-only runtime with an override stays byte-identical: the override IS
+    # the whole execution bridge (no composition wrapper).
+    override = InternalCapabilityExecutor()
+    executor = factory_module._executor_for({ToolKind.INTERNAL: override}, override)
+    assert executor is override
+
+
+def test_executor_override_composes_with_mcp_routing():
+    # THE regression: an internal-execution override must NOT discard the MCP
+    # route. With internal + MCP mounted, a selected MCP capability has to reach
+    # the MCPAdapter instead of the internal-only executor (which would fail
+    # unknown_capability before any transport call).
+    from app.agent.execution.capability_executor import CompositeCapabilityExecutor
+    from app.agent.runtime.factory import build_capability_platform
+
+    mgr = _discovered_mcp_manager()
+    platform = build_capability_platform(mcp_registry_manager=mgr)
+    override = InternalCapabilityExecutor()
+
+    executor = factory_module._executor_for(platform.executors_by_kind(), override)
+    assert isinstance(executor, CompositeCapabilityExecutor)
+
+    # MCP capability → routed to the MCPAdapter, not unknown_capability.
+    mcp_spec = platform.tool_registry.get("mcp.github.search_repositories")
+    mcp_result = run(executor.execute(mcp_spec, {"query": "my repos"}))
+    assert mcp_result.success is True
+    assert mcp_result.error_code is None
+    assert mcp_result.metadata["adapter_type"] == "mcp"
+    assert mcp_result.metadata["tool_name"] == "search_repositories"
+
+
+def test_override_still_governs_internal_execution_when_composed():
+    # The override must remain the INTERNAL executor after composition (the
+    # composition root wires it for real document retrieval — that intent stands).
+    from app.agent.runtime.factory import build_capability_platform
+
+    mgr = _discovered_mcp_manager()
+    platform = build_capability_platform(mcp_registry_manager=mgr)
+
+    async def fake_get_job(job_id, user_id=None):
+        return {"job_id": job_id, "status": "completed"}
+
+    override = InternalCapabilityExecutor(job_adapter=JobAdapter(get_job_fn=fake_get_job))
+    executor = factory_module._executor_for(platform.executors_by_kind(), override)
+
+    internal_result = run(executor.execute(make_tool("get_job_status"), {"job_id": "j1"}))
+    assert internal_result.success is True
+    assert internal_result.output["status"] == "completed"
+
+
+def test_build_default_runtime_override_plus_mcp_routes_mcp_tool():
+    # End-to-end through the public factory entry point: override + MCP manager
+    # yields a runtime whose execution bridge can run an MCP capability.
+    from app.agent.execution.capability_executor import CompositeCapabilityExecutor
+
+    mgr = _discovered_mcp_manager()
+    orch = build_default_runtime(
+        mcp_registry_manager=mgr,
+        capability_executor=InternalCapabilityExecutor(),
+    )
+    bridge = orch._direct_runtime._executor
+    assert isinstance(bridge, CompositeCapabilityExecutor)
+    mcp_spec = mgr.tool_registry.get("mcp.github.search_repositories")
+    result = run(bridge.execute(mcp_spec, {"query": "my repos"}))
+    assert result.success is True
+    assert result.metadata["adapter_type"] == "mcp"
+
+
+# --------------------------------------------------------------------------- #
 # Hygiene
 # --------------------------------------------------------------------------- #
 

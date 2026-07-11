@@ -30,6 +30,7 @@ from app.agent.execution.capability_executor import (
     CompositeCapabilityExecutor,
     InternalCapabilityExecutor,
 )
+from app.agent.models.tool_spec import ToolKind
 from app.agent.llm.final_provider import DeterministicFinalProvider, FinalAnswerProvider
 from app.agent.llm.planner_provider import DeterministicPlannerProvider, V15PlannerProvider
 from app.agent.llm.provider_adapter import V15FinalAnswerProvider
@@ -100,9 +101,23 @@ def _executor_for(kind_map: dict, override):
     A single source uses its own executor directly (so an internal-only runtime is
     byte-identical to before); multiple sources route by kind via
     ``CompositeCapabilityExecutor``.
+
+    An ``override`` is the caller's internal-execution bridge (e.g. the
+    composition root wiring the internal document adapter to real retrieval). With
+    a single mounted kind it IS the whole bridge (internal-only runtimes stay
+    byte-identical). With multiple kinds it must govern ONLY ``INTERNAL``
+    execution — the other kinds (MCP, future) keep their own source executors, so a
+    selected MCP capability still reaches its ``MCPAdapter``. Returning the override
+    verbatim here would hand every MCP-kind tool to the internal-only executor,
+    which has no binding for ``mcp.*`` ids and fails ``unknown_capability`` before
+    the transport is ever reached.
     """
     if override is not None:
-        return override
+        if len(kind_map) <= 1:
+            return override
+        composed = dict(kind_map)
+        composed[ToolKind.INTERNAL] = override
+        return CompositeCapabilityExecutor(composed)
     if len(kind_map) == 1:
         return next(iter(kind_map.values()))
     return CompositeCapabilityExecutor(kind_map)
