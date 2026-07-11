@@ -184,3 +184,39 @@ def test_invalid_top_k_fails_validation():
         CapabilityRetrievalRequest(query="hello", top_k=0)
     with pytest.raises(ValidationError):
         CapabilityRetrievalRequest(query="hello", top_k=-3)
+
+
+# --------------------------------------------------------------------------- #
+# RunContext-aware query construction (Phase 46.2.2)
+# --------------------------------------------------------------------------- #
+
+class _RC:
+    """Minimal duck-typed RunContext for the query builder."""
+
+    def __init__(self, user_request, working_context=None):
+        self.user_request = user_request
+        self.working_context = working_context or []
+        self.metadata = {}
+        self.behavior_profile = None
+
+
+def test_build_run_context_query_folds_working_context():
+    from app.agent.capabilities.retriever import build_run_context_query
+
+    rc = _RC("List my repositories", [{"content": "earlier: list open issues"}])
+    query = build_run_context_query(rc)
+    assert "List my repositories" in query and "issues" in query  # both folded in
+
+
+def test_query_override_uses_request_only_for_selection():
+    # Selection must be driven by the current request, so a query override skips the
+    # (potentially topic-polluting) working context entirely.
+    from app.agent.capabilities.retriever import build_run_context_request
+
+    rc = _RC("List my repositories", [{"content": "earlier: list open issues and pull requests"}])
+    req = build_run_context_request(rc, query=rc.user_request, top_k=5)
+    assert req.query == "List my repositories"
+    assert "issues" not in req.query
+    # Without the override, the working context is folded in (unchanged default).
+    default = build_run_context_request(rc, top_k=5)
+    assert "issues" in default.query

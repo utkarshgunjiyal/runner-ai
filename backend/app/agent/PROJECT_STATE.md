@@ -75,8 +75,8 @@ config-free and unit-testable without a database or credentials.
 | Field | Value |
 |---|---|
 | **Branch** | `v2-autonomous-platform` |
-| **Latest commit** | `V2 Phase 46.2.1: Fix GitHub MCP Deployment Transport` |
-| **Test count** | **867 backend** + **91 frontend** (Vitest) |
+| **Latest commit** | `V2 Phase 46.2.2: Fix GitHub Capability Selection` |
+| **Test count** | **870 backend** + **91 frontend** (Vitest) |
 | **Python** | 3.11 (developed on 3.11.15) |
 | **Test command** | `cd backend && python -m pytest` |
 
@@ -655,6 +655,28 @@ router; styling is one design-token stylesheet.
   `threadSidebar`, `composer`, `sourceChips`, `chatShellLayout`; every prior
   behavioral test kept and green. Backend unchanged (814).
 
+### Phase 46.2.2 — GitHub Capability Selection Fix (context-polluted query)
+"List all my GitHub repositories" executed `mcp.github.list_issues` /
+`list_pull_requests` instead of `mcp.github.search_repositories`. **Root cause:
+capability-selection layer only** (MCP/transport/adapters/planner ranking are
+correct). The keyword scorer ranks `search_repositories` top on the raw request
+(112 vs 69). The defect: Phase 46.2 switched `DirectRuntime` to
+`retrieve_for_run_context` (to apply connector eligibility on the direct path), and
+that method builds the query via `build_run_context_query`, which **folds the whole
+working context + behavior-profile reason into the query**. After a few issue/PR
+turns the query became "…repositories. List open issues… Show issue 23… pull
+requests…", so `list_pull_requests` (178) and `list_issues` (145) outranked
+`search_repositories` (140) — a prior topic drowned out the current intent.
+- **Fix (selection layer only).** `build_run_context_request` gains an optional
+  `query` override; `DirectRuntime` now retrieves with `query=run_context.user_request`
+  — capability selection is driven by the **current request**, while the RunContext
+  is still passed through for connector/intent **eligibility** filtering (the
+  Phase 46.2 fix is preserved). No change to MCP, transport, adapters, the GitHub
+  package, or the scorer.
+- **Tests.** +3 backend (870): a DirectRuntime regression (repository request selects
+  `search_repositories` despite heavy issue/PR working-context history) + query-override
+  unit tests.
+
 ### Phase 46.2.1 — GitHub MCP Deployment Transport Fix
 Phase 46.2 launched the GitHub MCP server as a local **stdio `docker run …`**
 process, which fails inside the containerized `runner_backend` (no `docker` binary,
@@ -1195,6 +1217,7 @@ reason — most of the codebase relies on them.
 | **Phase 44.1 ✅** | **Source-Aware Comparison Output** | *Done.* Fixes the demo's blended two-document comparison. The comparison intent (interpretation + resolved `documents`) is carried on `FinalPrompt.metadata` (`is_comparison`, `comparison_documents`) into synthesis; the **deterministic fallback provider** now groups evidence per document and emits a source-separated answer — `Document N — filename` sections + `Similarities` + `Differences` + `Sources`, with filename+page citations, covering every selected document (empty ones stated explicitly) and never blending across documents. Non-comparison path byte-identical; no new planner/interpreter; frontend already renders multi-line answers. |
 | **Phase 44.2 ✅** | **Evidence Compression & Comparison Synthesis** | *Done.* Improves only the deterministic/offline fallback comparison. New pure `comparison_synthesis.py`: a maintainable category→keyword taxonomy compresses retrieved chunks into concise, category-grouped technical skills (whole-token matching, normalized wrapped lines, de-duplicated), excludes contact/education/extracurricular/leadership noise, computes **concept-based** similarities/differences (not token lists), and cites **filename+page only** (no opaque `E#`). Output is bounded (no raw chunk dumps). Provider precedence, real-LLM path, retrieval, planner, checkpoint/resume, and frontend unchanged; non-comparison output byte-identical; streaming==non-streaming. |
 | **Phase 45 ✅** | **Final Frontend Polish & Demo UX** | *Done.* Frontend-only. Three-region **AI workspace** (conversations rail · chat · collapsed-by-default `RuntimeInspector`), design-token stylesheet, responsive (desktop columns → tablet inspector sheet → mobile sidebar drawer, overflow-free at 1440/834/390 px), a11y (focus-visible, `aria-*`, reduced-motion). Sidebar skeleton/empty/error+retry + relative time (`useThreads` additive `loading`/`error`); composer scope chips + Enter/Shift+Enter/Stop; answers lift `Sources` into filename+page **chips** (no `E#`); static **truthful** Integrations (Gmail/GitHub *coming next*, MCP *available* — no fake OAuth). No backend/planner/retrieval/ownership/checkpoint change; no new dependency. +26 frontend tests (89). |
+| **Phase 46.2.2 ✅** | **GitHub Capability Selection Fix** | *Done.* "List all my GitHub repositories" wrongly executed `list_issues`/`list_pull_requests`. Root cause was **only** the capability-selection query: `DirectRuntime` (via `retrieve_for_run_context`) folded the whole working context into the retrieval query, so prior issue/PR turns outranked the current repository intent. Fix: `build_run_context_request` gains a `query` override and `DirectRuntime` selects on the **current request** (eligibility still reads the RunContext). No MCP/transport/adapter/planner-ranking change. +3 backend (870). |
 | **Phase 46.2.1 ✅** | **GitHub MCP Deployment Transport Fix** | *Done.* Phase 46.2's stdio `docker run` failed inside the containerized backend (no docker/`docker.sock`). Default transport is now the **official remote Streamable HTTP endpoint** (`GITHUB_MCP_TRANSPORT=http`, `https://api.githubcopilot.com/mcp/`, `Authorization: Bearer` header) — works from Compose over outbound HTTPS with **no Docker socket / CLI / DinD / new port**; `stdio` kept as optional dev mode. Uses the existing `StreamableHTTPTransport` (no new protocol code). 401/403→`auth_failed`, zero-allowlisted-tools→`degraded`; allowlist/eligibility/normalization/status/frontend/redaction unchanged. Transport-aware verify script. +8 backend (867). **Live GitHub still not verified here — fake-POST protocol tests only.** |
 | **Phase 46.2 ✅** | **GitHub Read-Only MCP Connector** | *Done.* Real GitHub account via the EXISTING MCP stack (no direct REST). Pinned official `github-mcp-server` (stdio, `--read-only`); token via env only (fail-safe, never logged/returned/in ToolSpec). Read-only **allowlist** at discovery (`search_repositories`, `list_issues`, `issue_read`, `list_pull_requests`, `pull_request_read`, `search_issues`) — all write/admin tools blocked. Rich ToolSpec enrichment; per-server result **normalization** (Repository/Issue/PullRequest, bounded excerpts, grounded, no raw payload/`E#`). Connector eligibility reflects real health (tools filtered before planning when unavailable; `DirectRuntime` now RunContext-aware). Live `/integrations` status API + frontend panel (no token input); Gmail stays truthful. Fail-safe startup; opt-in `verify-github-mcp.sh` (never in CI). +27 backend (859), +2 frontend (91). **Live GitHub not verified here — fake-MCP integration tests only.** |
 | **Phase 46.1 ✅** | **Deterministic Document Inventory Intent** | *Done.* Fixes an empty-thread routing/isolation bug where "what documents are uploaded?" ran document retrieval and returned an old résumé with `E1`. New `Intent.DOCUMENT_INVENTORY` + `is_document_inventory_request` (deterministic, no LLM) classify inventory questions (scope NONE) and exclude content/management requests. An orchestrator **fast path** lists the active thread's own document records (via `document_service.list_thread_documents`, same source as the UI) — bypassing scope gate, capability retrieval, planner, chunk retrieval, embeddings, reranker, and the final LLM — with empty evidence (no `E#`), safe status labels, filename-only, and identical streaming. Root cause was **routing** (fresh RunContext per run → no stale-state bug). +18 backend tests (832). |
@@ -1322,8 +1345,10 @@ library, by choice). The dev-user auth stub is unchanged (documented in
 
 ## Test Status
 
-- **Backend:** **867 passing** (1 benign Starlette deprecation warning),
-  `cd backend && python -m pytest`, ~2–3s. Phase 46.2.1 adds `test_github_http_transport`
+- **Backend:** **870 passing** (1 benign Starlette deprecation warning),
+  `cd backend && python -m pytest`, ~2–3s. Phase 46.2.2 adds a DirectRuntime selection
+  regression (repository request beats issue/PR history) + query-override unit tests.
+  Phase 46.2.1 adds `test_github_http_transport`
   (real Streamable HTTP transport via injectable POST: initialize/session/tools-list/
   tools-call, JSON+SSE, 401/403→auth, 500→safe, allowlist, no token leak) + http
   config tests. Phase 46.2 adds `test_github_connector`,

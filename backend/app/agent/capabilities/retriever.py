@@ -54,6 +54,7 @@ def build_run_context_query(run_context) -> str:
 def build_run_context_request(
     run_context,
     *,
+    query: str | None = None,
     top_k: int = 8,
     include_disabled: bool = False,
     allowed_kinds=None,
@@ -61,10 +62,17 @@ def build_run_context_request(
     required_tags=None,
     excluded_tool_ids=None,
 ) -> CapabilityRetrievalRequest:
-    """Build a CapabilityRetrievalRequest from a RunContext plus optional filters."""
+    """Build a CapabilityRetrievalRequest from a RunContext plus optional filters.
+
+    ``query`` overrides the retrieval text. When ``None`` (default) the query is the
+    full context-enriched query (``build_run_context_query``). Capability *selection*
+    should pass the current request here so conversation history cannot outweigh the
+    current intent (Phase 46.2.2); the RunContext is still used for connector/intent
+    eligibility filtering by the wrapper retrievers.
+    """
 
     kwargs: dict = {
-        "query": build_run_context_query(run_context),
+        "query": query if query is not None else build_run_context_query(run_context),
         "top_k": top_k,
         "include_disabled": include_disabled,
     }

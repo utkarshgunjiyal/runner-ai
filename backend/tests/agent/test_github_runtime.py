@@ -80,6 +80,52 @@ def _orchestrator(*, connected: bool):
     return orch, client
 
 
+def test_repository_request_selects_repositories_despite_issue_pr_history():
+    """Regression (Phase 46.2.2): 'List all my GitHub repositories' must select
+    ``search_repositories`` even when the working context is full of prior issue/PR
+    turns. Capability selection is driven by the CURRENT request, not by history
+    folded into the query — otherwise a prior topic outranks the current intent."""
+    from app.agent.capabilities.keyword_retriever import KeywordCapabilityRetriever
+    from app.agent.connectors.eligibility import EligibilityCapabilityRetriever
+    from app.agent.retriever.capability_retriever import HybridCapabilityRetriever
+    from app.agent.runtime.context import BehaviorPath, BehaviorProfile, RunContext, WorkingContextItem
+    from app.agent.runtime.direct_runtime import DirectRuntime
+    from app.agent.tools.result import AdapterResult
+
+    client = FakeMCPClient(tools={GITHUB_MCP_SERVER_ID: _github_defs()})
+    mgr = MCPRegistryManager(ToolRegistry(), client, spec_transform=github_spec_transform)
+    run(mgr.register_server(build_github_mcp_server_config(token="t")))
+    run(mgr.discover_server_tools(GITHUB_MCP_SERVER_ID))
+
+    executed: list[str] = []
+
+    class RecordingExecutor:
+        async def execute(self, tool, args):
+            executed.append(tool.id)
+            return AdapterResult.ok(output={"ok": True}, evidence=[])
+
+    retriever = EligibilityCapabilityRetriever(
+        HybridCapabilityRetriever(KeywordCapabilityRetriever(mgr.tool_registry))
+    )
+    direct = DirectRuntime(retriever, RecordingExecutor())
+
+    # Prior turns were all about issues and pull requests.
+    history = [
+        WorkingContextItem(source="recent_message", content="List open issues in runner-ai", metadata={"seq": 1}),
+        WorkingContextItem(source="recent_message", content="Show issue 23 in runner-ai", metadata={"seq": 2}),
+        WorkingContextItem(source="recent_message", content="List open pull requests in runner-ai", metadata={"seq": 3}),
+        WorkingContextItem(source="thread_summary",
+                           content="The user is reviewing GitHub issues and pull requests in runner-ai."),
+    ]
+    rc = RunContext.create("List all my GitHub repositories.", user_id="u", thread_id="t1",
+                           working_context=history)
+    rc.attach_behavior_profile(BehaviorProfile(path=BehaviorPath.DIRECT, reason="github", confidence=1.0))
+    rc.metadata["connectors"] = _connectors_snapshot(connected=True)
+
+    run(direct.run(rc))
+    assert executed == ["mcp.github.search_repositories"], executed
+
+
 def test_github_request_selects_and_grounds_when_connected():
     orch, client = _orchestrator(connected=True)
     result = run(orch.run("List my GitHub repositories", user_id="u", thread_id="t1"))
