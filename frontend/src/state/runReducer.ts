@@ -2,7 +2,7 @@
 // drive transitions. Only safe metadata is folded into the timeline; the reducer
 // never interprets partial answer chunks and never stores internal runtime state.
 
-import type { JsonValue, RuntimeEvent, RuntimeOutcome } from '../api/types';
+import type { AgentRunResponse, DocumentCandidate, JsonValue, RuntimeEvent, RuntimeOutcome } from '../api/types';
 import {
   initialRunState,
   statusForOutcome,
@@ -19,6 +19,26 @@ function str(value: JsonValue | undefined): string | undefined {
 
 function numeric(value: JsonValue | undefined): number | undefined {
   return typeof value === 'number' ? value : undefined;
+}
+
+/** Parse a `document_candidates` payload into safe DocumentCandidate entries. */
+export function parseDocumentCandidates(value: JsonValue | undefined): DocumentCandidate[] {
+  if (!Array.isArray(value)) return [];
+  const result: DocumentCandidate[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const documentId = entry.document_id;
+    const filename = entry.filename;
+    if (typeof documentId === 'string' && typeof filename === 'string') {
+      const createdAt = entry.created_at;
+      result.push({
+        document_id: documentId,
+        filename,
+        created_at: typeof createdAt === 'string' ? createdAt : '',
+      });
+    }
+  }
+  return result;
 }
 
 /** Map a runtime event to a safe timeline entry, or null to skip it. */
@@ -161,9 +181,11 @@ function applyEvent(state: RunState, event: RuntimeEvent): RunState {
         status: statusForOutcome(outcome),
         outcome,
         runId: event.run_id ?? state.runId,
+        threadId: str(d.thread_id) ?? state.threadId,
         checkpointId: str(d.checkpoint_id) ?? null,
         pendingAction: str(d.pending_action) ?? null,
         pendingReason: str(d.pending_reason) ?? null,
+        documentCandidates: parseDocumentCandidates(d.document_candidates),
       };
     }
 
@@ -177,14 +199,7 @@ function applyEvent(state: RunState, event: RuntimeEvent): RunState {
   }
 }
 
-function applyResumeResponse(state: RunState, response: {
-  runtime_outcome: RuntimeOutcome;
-  answer: string | null;
-  checkpoint_id: string | null;
-  pending_action: string | null;
-  pending_reason: string | null;
-  run_id: string;
-}): RunState {
+function applyResumeResponse(state: RunState, response: AgentRunResponse): RunState {
   const status = statusForOutcome(response.runtime_outcome);
   const answerRounds =
     response.answer != null
@@ -196,11 +211,13 @@ function applyResumeResponse(state: RunState, response: {
     status,
     outcome: response.runtime_outcome,
     runId: response.run_id ?? state.runId,
+    threadId: response.thread_id ?? state.threadId,
     answerRounds,
     // A new checkpoint if it waits again; cleared once completed/failed.
     checkpointId: response.checkpoint_id,
     pendingAction: response.pending_action,
     pendingReason: response.pending_reason,
+    documentCandidates: parseDocumentCandidates(response.metadata?.document_candidates),
   };
 }
 

@@ -108,6 +108,39 @@ body { margin: 0; background: var(--bg); color: var(--text); }
 .resuming-note { color: var(--muted); font-size: 13px; }
 .app-error { max-width: 520px; margin: 80px auto; text-align: center; color: var(--text); }
 
+/* Thread + document support (Phase 42B) — functional layout only. */
+.app-layout { display: flex; min-height: 100vh; align-items: stretch; }
+.app-layout .chat-shell { flex: 1; margin: 0; max-width: none; }
+
+.thread-sidebar { width: 260px; flex: 0 0 260px; border-right: 1px solid var(--border); background: var(--panel); padding: 16px 12px; display: flex; flex-direction: column; gap: 12px; }
+.thread-new { width: 100%; }
+.thread-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
+.thread-item { width: 100%; text-align: left; display: flex; justify-content: space-between; gap: 8px; background: transparent; border: 1px solid transparent; color: var(--text); padding: 8px 10px; border-radius: 8px; cursor: pointer; font: inherit; }
+.thread-item:hover { background: var(--panel-2); }
+.thread-item.active { background: var(--panel-2); border-color: var(--border); }
+.thread-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-count { color: var(--muted); font-size: 12px; }
+.thread-empty { color: var(--muted); font-size: 13px; padding: 6px 10px; }
+
+.doc-selector { border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-bottom: 10px; background: var(--panel); }
+.doc-selector-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.doc-selector-title { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.doc-upload { font-size: 13px; color: var(--accent); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.doc-empty { color: var(--muted); font-size: 13px; margin: 0; }
+.doc-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.doc-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; font-size: 13px; cursor: pointer; }
+.doc-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-status { color: var(--warn); font-size: 12px; }
+
+.doc-picker { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; background: var(--panel); }
+.doc-picker-list { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.doc-picker-option { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+
+@media (max-width: 720px) {
+  .app-layout { flex-direction: column; }
+  .thread-sidebar { width: auto; flex: none; border-right: none; border-bottom: 1px solid var(--border); }
+}
+
 @media (max-width: 640px) {
   .chat-main { padding: 14px; }
   .msg-user { max-width: 90%; }

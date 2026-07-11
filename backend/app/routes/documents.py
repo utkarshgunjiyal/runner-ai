@@ -2,7 +2,7 @@ import os
 import re
 import uuid
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.config import settings
 from app.logging_config import get_logger
@@ -12,6 +12,7 @@ from app.services import (
     job_queue_service,
     job_service,
     storage_service,
+    thread_service,
 )
 
 logger = get_logger("documents")
@@ -45,8 +46,16 @@ def _document_public(doc: dict) -> DocumentPublic:
 
 
 @router.post("/upload", response_model=UploadResponse, status_code=202)
-async def upload_document(file: UploadFile = File(...)) -> UploadResponse:
+async def upload_document(
+    file: UploadFile = File(...),
+    thread_id: str | None = Form(default=None),
+) -> UploadResponse:
     user_id = DEV_USER_ID
+    # Phase 43: a document uploaded into a thread is owned by (user, thread).
+    # Validate ownership before storing anything (404 if the thread isn't the
+    # user's). thread_id is optional for backward compatibility.
+    if thread_id:
+        await thread_service.get_thread(user_id, thread_id)
     content_type = (file.content_type or "application/octet-stream").split(";")[0].strip()
 
     if content_type not in settings.allowed_content_types:
@@ -67,7 +76,9 @@ async def upload_document(file: UploadFile = File(...)) -> UploadResponse:
         )
 
     filename = _safe_filename(file.filename)
-    storage_key = f"{user_id}/{uuid.uuid4().hex}/{filename}"
+    # Thread-isolated object key (backend-generated; never trusts client keys).
+    thread_segment = thread_id if thread_id else "none"
+    storage_key = f"{user_id}/threads/{thread_segment}/{uuid.uuid4().hex}/{filename}"
 
     # Store raw bytes first; only then create records + enqueue so a failed
     # upload never leaves an orphaned job pointing at missing storage.
@@ -79,6 +90,7 @@ async def upload_document(file: UploadFile = File(...)) -> UploadResponse:
         content_type=content_type,
         size_bytes=size_bytes,
         storage_key=storage_key,
+        thread_id=thread_id,
     )
     document_id = str(document["_id"])
 

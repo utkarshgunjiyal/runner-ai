@@ -75,8 +75,8 @@ config-free and unit-testable without a database or credentials.
 | Field | Value |
 |---|---|
 | **Branch** | `v2-autonomous-platform` |
-| **Latest commit** | `V2 Phase 42B: Deployment, Demo, and Interview Readiness` |
-| **Test count** | **711 backend** (`608` `tests/agent`, `50` `tests/api`, `32` `tests/ops`, `21` `tests/deploy`) + **30 frontend** (Vitest) |
+| **Latest commit** | `V2 Phase 43: Thread, Document Scope, Context & Connector Integration` |
+| **Test count** | **767 backend** (`662` `tests/agent`, `52` `tests/api`, `32` `tests/ops`, `21` `tests/deploy`) + **50 frontend** (Vitest) |
 | **Python** | 3.11 (developed on 3.11.15) |
 | **Test command** | `cd backend && python -m pytest` |
 
@@ -456,6 +456,44 @@ safe/off by default; the default suite and dev workflow stay byte-identical.
   SECURITY. **Decision:** the locked runtime is untouched; the only runtime-adjacent
   change is the `answer_evaluator` pass-through (composition), which defaults to the
   prior behavior (no evaluator → byte-identical).
+
+### Phase 43 — Thread/Document/Context/Connector Integration
+Scopes every request to **one user's** conversation and documents, and gates the
+capability catalog by the user's connectors — all deterministic and *in front of*
+the existing planner/executor runtime (steps 5–7 unchanged). Docs:
+[`docs/THREAD_DOCUMENT_MODEL.md`](../../../docs/THREAD_DOCUMENT_MODEL.md),
+[`docs/CONNECTORS.md`](../../../docs/CONNECTORS.md).
+- **Interpreter** (`interpret/`): deterministic classification of a request on two
+  separate axes — intent (`document_qa`, `document_summary`, `page_qa`,
+  `external_action`, …) and scope (document scope + connector scope + action
+  type) → `RequestInterpretation` (`resolution_source="deterministic"`).
+- **Document resolver** (`documents/resolver.py`): maps a reference to owned
+  `document_id`s by fixed priority — UI-selected ids (validated ⊆ owned set) →
+  exact filename → unique normalized filename → unique partial/title → single/
+  recent doc → last uploaded → clarification. The LLM never decides ownership;
+  filenames are match/display only, stable ids drive retrieval.
+- **Scope Gate** (`runtime/scope_gate.py`): runs early; an ambiguous/unauthorized
+  document reference yields a genuine `WAITING_FOR_USER`
+  (`pending_action="select_document"`) with a **safe** candidate list
+  (`document_id`/`filename`/`created_at`) and a checkpoint; resolved → attach
+  labelled document-chunk evidence. Resume revalidates the picked ids against the
+  owned set and continues the **same** `run_id`.
+- **Connectors** (`connectors/`): `ConnectorRecord` (provider/status/scopes/
+  opaque `credential_reference`/`account_display_name`/health) in an **in-memory**
+  registry; `eligibility.py` filters capabilities so the planner never sees a tool
+  whose connector is missing/unhealthy or lacks required scopes. Write/external
+  actions stay approval-gated by the existing policy/evaluator path. Distinct from
+  an **MCP server** (static, server-wide creds).
+- **RunRecorder**: persists the user message before the run and the assistant
+  message + run metadata after (`after_run`), then schedules the summary.
+- **Request-contract additions**: thread/document routes use the
+  `get_current_user` seam with ownership checks; `selected_document_ids` accepted
+  as **hints** (revalidated server-side), `document_candidates` returned on pause.
+- **Qdrant scoping**: `vector_store_service.search_scoped(query_vector, user_id,
+  top_k, document_ids, pages, thread_id)` — always filters `user_id`, enforces the
+  validated document-id set (`MatchAny`) + optional pages; new chunks carry
+  `thread_id`/`filename`/`source_type` (backward compatible; old user-global
+  chunks stay retrievable within a thread via their document-id set).
 
 ---
 
@@ -891,6 +929,7 @@ reason — most of the codebase relies on them.
 | **Phase 41B ✅** | **Frontend + Human-in-the-Loop** | *Done.* React + TS + Vite SPA: streaming answer, safe runtime timeline, HITL (clarification/approval/rejection/deferred) with checkpoint resume, cookie auth, 30 Vitest tests. One additive backend change: streamed `WAITING_*` runs now carry a resumable `checkpoint_id`. |
 | **Phase 42A ✅** | **Production Hardening, CI/CD, Observability & Deployment** | *Done.* Metrics abstraction + `/metrics`, correlation ids, `/health/{live,ready}`, SSE heartbeat + disconnect cancellation, rate limiting (Redis + fallback), security headers, hardened Docker + frontend image + `docker-compose.prod.yml`, GitHub Actions CI, ESLint 9 migration, docs. Opt-in/safe-by-default; runtime unchanged. |
 | **Phase 42B ✅** | **Deployment, Demo & Interview Readiness** | *Done.* Single-VM topology (Caddy+HTTPS, internal infra, resource limits, log rotation) + demo override; production auth **startup guard** (no silent `dev_user`); off-by-default **demo mode** (genuine checkpoint/resume via the existing evaluator seam); env validation; deploy/update/rollback/backup/restore/smoke scripts; shellcheck + compose + proxy CI + guarded manual deploy; interview/architecture/positioning/video docs. Locked runtime untouched. |
+| **Phase 43 ✅** | **Thread/Document/Context/Connector Integration** | *Done.* Deterministic pre-planning scope layer: interpreter (intent vs scope), ownership-validated document resolver, early **Scope Gate** (ambiguous/unauthorized doc ref → `WAITING_FOR_USER` + safe candidates + checkpoint, resumes the same run), connectors + capability **eligibility** (existence/health/scopes; MCP-server-vs-connector distinction), `RunRecorder`, thread/document routes on `get_current_user`, Qdrant `search_scoped` (user + validated document-id set + pages/thread). `selected_document_ids` are revalidated hints. **Boundary only** — no real OAuth/token refresh/secret storage; in-memory connector registry; legacy V1.5 routes keep the dev-user stub. |
 
 **Phase 41A current limitations (intentional scope boundary).** Real transports
 ship, but no MCP dependency/live server is required: `agent_mcp_enabled` defaults
@@ -930,21 +969,35 @@ compose/proxy validation only). `next recommended phase` → **none until the
 deployment is live/intentionally private, the demo is recorded, the resume is
 updated, and outreach begins.**
 
+**Phase 43 current limitations (intentional scope boundary).** Only the connector
+**boundary** ships: there is **no real per-user OAuth**, no token
+acquisition/refresh, and no secret storage — `credential_reference` is an opaque
+pointer to *where a secret would live*, not a token. The connector **registry is
+in-memory** (no DB, does not survive restart) and MCP stays disabled by default
+with zero server configs. Real OAuth + secret storage are explicitly deferred and
+slot in behind the same `credential_reference` boundary without changing the
+eligibility contract. The new thread/document routes use the `get_current_user`
+seam with ownership checks, but the **legacy V1.5 non-agent routes still use the
+dev-user stub** (unchanged). Document resolution is deterministic (the LLM never
+decides ownership).
+
 ---
 
 ## Test Status
 
-- **Backend:** **711 passing** (1 benign Starlette deprecation warning),
+- **Backend:** **767 passing** (1 benign Starlette deprecation warning),
   `cd backend && python -m pytest`, ~2–3s.
-  - `tests/agent/` — **608** (unit tests for every runtime stage, incl. the
-    DemoEvaluator; config-free, fakes + `asyncio.run`).
-  - `tests/api/` — **50** (FastAPI `TestClient` over the routers with injected
-    fakes; no DB/LLM).
+  - `tests/agent/` — **662** (unit tests for every runtime stage, incl. the
+    DemoEvaluator and the Phase-43 interpreter/resolver/scope-gate/connectors/
+    document-retrieval/thread-document e2e; config-free, fakes + `asyncio.run`).
+  - `tests/api/` — **52** (FastAPI `TestClient` over the routers with injected
+    fakes, incl. the run-recorder wiring; no DB/LLM).
   - `tests/ops/` — **32** (observability, rate limit, middleware, health, SSE).
   - `tests/deploy/` — **21** (env validation + production startup guard;
     config-free, no secret values in output).
-- **Frontend:** **30 passing** (Vitest + jsdom, mocked fetch/streams),
-  `cd frontend && npm test`. Also `npm run typecheck`, `npm run lint`,
+- **Frontend:** **50 passing** (Vitest + jsdom, mocked fetch/streams; incl.
+  threads client, useThreads switching, document picker/selector, thread-switch
+  reset), `cd frontend && npm test`. Also `npm run typecheck`, `npm run lint`,
   `npm run build` all green.
 
 ### Major test categories

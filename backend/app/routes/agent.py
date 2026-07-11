@@ -35,9 +35,16 @@ from app.agent.runtime.factory import build_default_runtime
 from app.agent.runtime.outcome import RuntimeOutcome
 from app.agent.runtime.resume_coordinator import AsyncResumeCoordinator
 from app.agent.runtime.streaming import RuntimeStreamer
+from app.logging_config import get_logger
+from app.agent.persistence import (
+    RunOutcomeView,
+    ThreadOwnershipError,
+    outcome_view_from_result,
+)
 from app.schemas.agent import AgentResumeRequest, AgentRunRequest, AgentRunResponse
 
 router = APIRouter(prefix="/agent", tags=["agent"])
+logger = get_logger("routes.agent")
 
 # V1.5 has no real auth yet (routes use a dev user). Keep the same default here;
 # a real ``get_current_user`` slots in via dependency override without touching
@@ -78,6 +85,20 @@ _coordinator: AsyncResumeCoordinator | None = None
 _use_real_llm = False
 _mcp_registry_manager = None
 _demo_mode = False
+# Phase 43: optional run recorder (thread ownership + message persistence),
+# installed at the composition root. Default None → routes are byte-identical.
+_run_recorder = None
+
+
+def get_run_recorder():
+    return _run_recorder
+
+
+def configure_run_recorder(recorder) -> None:
+    """Composition-root hook: install the RunRecorder (V1.5-backed persistence).
+    Default None keeps the routes free of any database dependency (tests)."""
+    global _run_recorder
+    _run_recorder = recorder
 
 
 def _build_demo_evaluator():
@@ -85,6 +106,11 @@ def _build_demo_evaluator():
     from app.agent.demo import DemoEvaluator
 
     return DemoEvaluator()
+
+
+_scope_gate = None
+_connector_eligibility = False
+_capability_executor = None
 
 
 def _get_orchestrator():
@@ -98,12 +124,21 @@ def _get_orchestrator():
             use_real_llm=_use_real_llm,
             mcp_registry_manager=_mcp_registry_manager,
             answer_evaluator=evaluator,
+            scope_gate=_scope_gate,
+            connector_eligibility=_connector_eligibility,
+            capability_executor=_capability_executor,
         )
     return _orchestrator
 
 
 def configure_agent_runtime(
-    *, use_real_llm: bool = False, mcp_registry_manager=None, demo_mode: bool = False
+    *,
+    use_real_llm: bool = False,
+    mcp_registry_manager=None,
+    demo_mode: bool = False,
+    scope_gate=None,
+    connector_eligibility: bool = False,
+    capability_executor=None,
 ) -> None:
     """Composition-root hook: select the LLM provider mode (and optionally a
     pre-discovered MCP registry manager) before the shared orchestrator is first
@@ -115,9 +150,13 @@ def configure_agent_runtime(
     onto the existing answer-evaluator seam for a deterministic, resumable HITL
     demo. It never activates unless explicitly passed true."""
     global _use_real_llm, _mcp_registry_manager, _demo_mode, _orchestrator, _coordinator
+    global _scope_gate, _connector_eligibility, _capability_executor
     _use_real_llm = bool(use_real_llm)
     _mcp_registry_manager = mcp_registry_manager
     _demo_mode = bool(demo_mode)
+    _scope_gate = scope_gate
+    _connector_eligibility = bool(connector_eligibility)
+    _capability_executor = capability_executor
     _orchestrator = None  # rebuild with the selected providers/capabilities on next use
     _coordinator = None
 
@@ -188,6 +227,10 @@ def _safe_response_metadata(result) -> dict:
                 "planner_error_type"):
         if result.metadata.get(key) is not None:
             metadata[key] = result.metadata[key]
+    # Phase 43: a document-selection pause carries a SAFE candidate list
+    # (document_id / filename / created_at only) so the UI can render a picker.
+    if result.metadata.get("document_candidates") is not None:
+        metadata["document_candidates"] = result.metadata["document_candidates"]
     return metadata
 
 
@@ -198,12 +241,22 @@ async def run_agent(
     coordinator=Depends(get_resume_coordinator),
 ) -> AgentRunResponse:
     user_id = resolve_user_id(user)
+    recorder = get_run_recorder()
+    thread_id = request.thread_id
+    if recorder is not None:
+        try:
+            thread_id = await recorder.before_run(user_id, thread_id, request.user_request)
+        except ThreadOwnershipError as exc:
+            raise HTTPException(status_code=404, detail="thread not found") from exc
     coord_result = await coordinator.start(
         request.user_request,
         user_id,
-        thread_id=request.thread_id,
-        metadata=request.metadata,
+        thread_id=thread_id,
+        metadata=request.scope_metadata(),
     )
+    if recorder is not None:
+        view = outcome_view_from_result(coord_result.result, coord_result.checkpoint_id)
+        await recorder.after_run(user_id, thread_id, view)
     return _to_response(coord_result)
 
 
@@ -245,6 +298,44 @@ def _sse(event: RuntimeEvent) -> str:
     return f"event: {event.type.value}\ndata: {json.dumps(event.model_dump())}\n\n"
 
 
+async def _record_stream(events, recorder, user_id: str, thread_id: str | None):
+    """Pass through the runtime event stream, then persist the assistant message +
+    run metadata from the terminal event (Phase 43). Persistence failures never
+    break the stream to the client."""
+    answer_parts: list[str] = []
+    terminal = None
+    async for event in events:
+        etype = event.type.value
+        if etype == "answer_chunk":
+            text = event.data.get("text")
+            if isinstance(text, str):
+                answer_parts.append(text)
+        elif etype == "answer_completed":
+            text = event.data.get("text")
+            if isinstance(text, str):
+                answer_parts = [text]
+        elif etype in ("runtime_completed", "runtime_failed"):
+            terminal = event
+        yield event
+
+    if terminal is not None:
+        data = terminal.data or {}
+        outcome = str(data.get("runtime_outcome") or ("failed" if terminal.type.value == "runtime_failed" else "completed"))
+        answer_text = "".join(answer_parts) if outcome in ("completed", "completed_with_warning") else None
+        view = RunOutcomeView(
+            run_id=terminal.run_id,
+            runtime_outcome=outcome,
+            answer_text=answer_text,
+            pending_action=data.get("pending_action"),
+            pending_reason=data.get("pending_reason"),
+            checkpoint_id=data.get("checkpoint_id"),
+        )
+        try:
+            await recorder.after_run(user_id, thread_id, view)
+        except Exception:  # noqa: BLE001 - persistence must not break the response
+            logger.warning("agent.stream_record_failed", extra={"run_id": terminal.run_id})
+
+
 @router.post("/run/stream")
 async def run_agent_stream(
     request: AgentRunRequest,
@@ -253,14 +344,24 @@ async def run_agent_stream(
     streamer: RuntimeStreamer = Depends(get_runtime_streamer),
 ) -> StreamingResponse:
     user_id = resolve_user_id(user)
+    recorder = get_run_recorder()
+    thread_id = request.thread_id
+    if recorder is not None:
+        try:
+            thread_id = await recorder.before_run(user_id, thread_id, request.user_request)
+        except ThreadOwnershipError as exc:
+            raise HTTPException(status_code=404, detail="thread not found") from exc
 
     # Transport only: the RuntimeStreamer owns event ordering/generation; the SSE
     # helper adds heartbeats and cancels the run cleanly on client disconnect.
+    events = streamer.run_stream(
+        request.user_request, user_id,
+        thread_id=thread_id, metadata=request.scope_metadata(),
+    )
+    if recorder is not None:
+        events = _record_stream(events, recorder, user_id, thread_id)
     event_source = sse_event_source(
-        streamer.run_stream(
-            request.user_request, user_id,
-            thread_id=request.thread_id, metadata=request.metadata,
-        ),
+        events,
         serialize=_sse,
         is_disconnected=http_request.is_disconnected,
         heartbeat_seconds=_sse_heartbeat_seconds,

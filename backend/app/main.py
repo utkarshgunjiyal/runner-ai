@@ -24,9 +24,11 @@ from app.routes.agent import (
     router as agent_router,
     configure_checkpoint_store,
     configure_agent_runtime,
+    configure_run_recorder,
     configure_sse,
     get_current_user,
 )
+from app.routes.threads import router as threads_router
 from app.deploy.startup_guard import check_startup_safety
 from app.agent.checkpoint.composition import select_checkpoint_store
 from app.agent.checkpoint.mongo_store import mongo_collection_from_uri
@@ -129,12 +131,23 @@ async def lifespan(app: FastAPI):
                 extra={"servers": [c.public_metadata() for c in server_configs]},
             )
 
+    # Thread/document scope gate + run recorder (Phase 43). Composition root wires
+    # the V1.5-backed callables; the runtime/routes stay config-free. The scope
+    # gate resolves document references (and can pause for a genuine document
+    # picker); the recorder validates thread ownership and persists messages.
+    scope_gate = _build_scope_gate()
+    capability_executor = _build_capability_executor()
+    configure_run_recorder(_build_run_recorder())
+
     # Agent LLM providers (Phase 37). Composition root selects deterministic vs
     # real V1.5-backed providers; routes stay config-free. One shared orchestrator.
     configure_agent_runtime(
         use_real_llm=settings.agent_use_real_llm,
         mcp_registry_manager=mcp_registry_manager,
         demo_mode=settings.demo_mode,
+        scope_gate=scope_gate,
+        connector_eligibility=True,
+        capability_executor=capability_executor,
     )
     logger.info(
         "app.agent_llm_ready",
@@ -160,6 +173,83 @@ async def lifespan(app: FastAPI):
         checkpoint_mongo_client.close()  # owned here; distinct from the Motor client
     client.close()
     logger.info("app.shutdown")
+
+
+def _build_scope_gate():
+    """Compose the Phase 43 ScopeGate from V1.5 services (lazy, composition-root)."""
+    from app.agent.connectors import InMemoryConnectorRegistry
+    from app.agent.documents import build_scoped_document_retriever
+    from app.agent.runtime.scope_gate import ScopeGate
+    from app.services import document_service
+
+    async def thread_documents_fn(user_id, thread_id):
+        docs = await document_service.list_thread_documents(user_id, thread_id)
+        return [
+            {
+                "document_id": str(d["_id"]),
+                "filename": d.get("filename"),
+                "normalized_filename": d.get("normalized_filename"),
+                "created_at": d.get("created_at"),
+                "status": d.get("status"),
+            }
+            for d in docs
+            # Only completed (indexed) documents are retrievable.
+            if d.get("status") == "completed"
+        ]
+
+    async def recent_document_fn(user_id, thread_id):
+        docs = await document_service.list_thread_documents(user_id, thread_id)
+        completed = [d for d in docs if d.get("status") == "completed"]
+        return str(completed[0]["_id"]) if completed else None
+
+    # Connectors: the shipped registry is empty (no per-user OAuth yet), so no
+    # connector-backed capabilities are eligible. Real registry deferred.
+    _registry = InMemoryConnectorRegistry()
+
+    async def connectors_fn(user_id):
+        return await _registry.list_for_user(user_id)
+
+    return ScopeGate(
+        thread_documents_fn=thread_documents_fn,
+        document_retriever_fn=build_scoped_document_retriever(),
+        recent_document_fn=recent_document_fn,
+        connectors_fn=connectors_fn,
+    )
+
+
+def _build_run_recorder():
+    from app.services.agent_run_recorder import MongoRunRecorder
+
+    return MongoRunRecorder()
+
+
+def _build_capability_executor():
+    """Wire the internal document capability to real retrieval (Phase 43 — this
+    finally implements the Phase-13 DocumentAdapter TODO), so a planner that
+    selects ``search_documents``/``get_document_summary`` executes real service
+    calls instead of raising. Retrieval is filtered by user_id (+ the requested
+    document scope); the ScopeGate remains the primary thread-scoped path."""
+    from app.agent.documents import build_scoped_document_retriever
+    from app.agent.execution.capability_executor import InternalCapabilityExecutor
+    from app.agent.tools.internal.document_adapter import DocumentAdapter
+    from app.services import document_service
+
+    scoped = build_scoped_document_retriever()
+
+    async def _retrieve(*, query, user_id, top_k=8, document_id=None, page=None):
+        return await scoped(
+            query=query, user_id=user_id, top_k=top_k,
+            document_ids=[document_id] if document_id else None,
+            pages=[page] if page else None,
+        )
+
+    async def _summary(*, document_id, user_id=None):
+        doc = await document_service.get_document(document_id, user_id)
+        return {"summary": (doc or {}).get("summary", "")}
+
+    return InternalCapabilityExecutor(
+        document_adapter=DocumentAdapter(retrieve_fn=_retrieve, summary_fn=_summary)
+    )
 
 
 def load_trusted_mcp_server_configs():
@@ -230,6 +320,7 @@ app.include_router(documents_router)
 app.include_router(jobs_router)
 app.include_router(memory_router)
 app.include_router(agent_router)
+app.include_router(threads_router)
 
 
 @app.get("/")

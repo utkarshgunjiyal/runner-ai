@@ -73,6 +73,33 @@ and a **`checkpoint_id`**. The UI shows the ApprovalPanel. On **Approve**, the
 client calls `POST /agent/resume` with `{kind: "approval"}`; the **same run**
 continues and returns a final answer (JSON, not streamed).
 
+## Threads & documents
+
+Phase 43 scopes every request to one user's conversation and its documents. To
+show it end-to-end:
+
+1. **Upload into a thread.** With a thread open, upload a document. It is stored
+   with that thread's `thread_id`; only this thread can retrieve over it.
+2. **Thread-wide question.** Ask something like `What do these documents cover?`
+   Retrieval filters Qdrant by `user_id` and the thread's full owned document
+   set — no other thread's or user's documents are reachable.
+3. **Single-document question.** Reference one file by name (e.g.
+   `Summarize invoice_2024.pdf`). The resolver matches it to a stable
+   `document_id` and retrieval is scoped to just that document.
+4. **Document-ambiguity clarification.** Upload two files that both match a vague
+   reference (e.g. `Q1-Report.pdf` and `Q2-Report.pdf`) and ask
+   `summarize the report`. Resolution is ambiguous, so the run pauses
+   `waiting_for_user` with `pending_action="select_document"`, persists a
+   checkpoint, and returns `document_candidates` (safe fields only:
+   `document_id`, `filename`, `created_at`). The UI shows a **document picker**;
+   picking a document resumes the **same run** — the backend revalidates the id
+   against the owned set and continues retrieval over the chosen document.
+
+Filenames are only for matching/display; retrieval always uses the stable
+`document_id`. Client-sent `selected_document_ids` are hints, revalidated
+server-side (see [`SECURITY.md`](./SECURITY.md)). Details:
+[`THREAD_DOCUMENT_MODEL.md`](./THREAD_DOCUMENT_MODEL.md).
+
 ## Show correlation (logs)
 
 Every response carries an `X-Request-ID`. To follow one request across services:

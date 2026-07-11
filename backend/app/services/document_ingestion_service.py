@@ -61,6 +61,8 @@ async def ingest_document(job_id: str) -> dict:
                 document_id=document_id,
                 chunks=chunks,
                 vectors=vectors,
+                thread_id=document.get("thread_id"),
+                filename=document.get("filename"),
             )
 
         # 6. Generate a document-level summary.

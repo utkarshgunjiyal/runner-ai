@@ -106,6 +106,7 @@ class DemoEvaluator:
                 },
             )
 
+
         request = _request_text(final_prompt, run_context).lower()
 
         if any(keyword in request for keyword in self._approval):

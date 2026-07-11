@@ -148,13 +148,17 @@ class RuntimeStreamer:
             except Exception:  # noqa: BLE001 - never let persistence break the stream
                 checkpoint_id = None
 
-        yield seq.make(
-            E.RUNTIME_COMPLETED,
-            run_id=result.run_id,
-            data={
-                "runtime_outcome": result.runtime_outcome.value,
-                "pending_action": result.pending_action,
-                "pending_reason": result.pending_reason,
-                "checkpoint_id": checkpoint_id,
-            },
-        )
+        terminal_data = {
+            "runtime_outcome": result.runtime_outcome.value,
+            "thread_id": getattr(result, "thread_id", None),
+            "pending_action": result.pending_action,
+            "pending_reason": result.pending_reason,
+            "checkpoint_id": checkpoint_id,
+        }
+        # Phase 43: a document-selection pause carries a SAFE candidate list
+        # (document_id / filename / created_at only) so the UI can render a picker.
+        candidates = result.metadata.get("document_candidates")
+        if candidates is not None:
+            terminal_data["document_candidates"] = candidates
+
+        yield seq.make(E.RUNTIME_COMPLETED, run_id=result.run_id, data=terminal_data)

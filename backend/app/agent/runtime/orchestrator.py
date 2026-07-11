@@ -164,8 +164,13 @@ class AgentOrchestrator:
         answer_evaluator: AnswerEvaluatorLike | None = None,
         repair_runtime: RepairRuntimeLike | None = None,
         max_repair_rounds: int = 1,
+        scope_gate=None,
     ) -> None:
         self._context_engine = context_engine
+        # Phase 43: an optional scope gate resolves document references (and can
+        # pause for a genuine document-selection clarification) before execution.
+        # Default None → byte-identical to before.
+        self._scope_gate = scope_gate
         self._behavior_gate = behavior_gate
         self._direct_runtime = direct_runtime
         self._planner_runtime = planner_runtime
@@ -210,6 +215,15 @@ class AgentOrchestrator:
             providers=run_context.metadata.get("context_providers"),
             context_size=len(run_context.working_context),
         )
+
+        # 1b. Scope Gate (Phase 43) — resolve document references before execution.
+        # An ambiguous/unauthorized reference pauses the run for a genuine
+        # document-selection clarification (WAITING_FOR_USER). A resolved
+        # reference attaches the document evidence to the RunContext.
+        if self._scope_gate is not None:
+            decision = await self._scope_gate.evaluate(run_context)
+            if decision.action == "clarify":
+                return self._scope_clarification_result(run_context, decision)
 
         # 2. Behavior Gate — attaches behavior_profile + metadata["behavior_decision"].
         self._behavior_gate.decide(run_context)
@@ -514,6 +528,45 @@ class AgentOrchestrator:
             metadata=result_metadata,
         )
 
+    def _scope_clarification_result(self, run_context: RunContext, decision) -> AgentRunResult:
+        """A genuine WAITING_FOR_USER pause for document-selection ambiguity.
+
+        Carries a SAFE candidate list (document_id / filename / created_at only)
+        in metadata so the UI can render a picker. No answer is generated and no
+        retrieval is performed until the user selects."""
+        from app.agent.runtime.scope_gate import SELECT_DOCUMENT_ACTION
+
+        reason = decision.pending_reason or "Please select which document you mean."
+        final_prompt = self._final_context_builder.build(run_context)
+        answer = FinalAnswer(
+            text=reason, provider="", model="", finish_reason="waiting",
+            metadata={"waiting": True, "pending_action": SELECT_DOCUMENT_ACTION},
+        )
+        attach_final_answer(run_context, answer)
+
+        run_context.metadata["runtime_outcome"] = RuntimeOutcome.WAITING_FOR_USER.value
+        run_context.metadata["document_candidates"] = decision.candidates
+
+        return AgentRunResult(
+            run_id=run_context.run_id,
+            user_id=run_context.user_id,
+            thread_id=run_context.thread_id,
+            behavior_path="direct",
+            answer=answer,
+            final_prompt=final_prompt,
+            run_context=run_context,
+            runtime_outcome=RuntimeOutcome.WAITING_FOR_USER,
+            pending_action=SELECT_DOCUMENT_ACTION,
+            pending_reason=reason,
+            metadata={
+                "runtime_outcome": RuntimeOutcome.WAITING_FOR_USER.value,
+                "pending_action": SELECT_DOCUMENT_ACTION,
+                "document_candidates": decision.candidates,
+                "document_scope": decision.metadata.get("document_scope"),
+                "clarification_needed": True,
+            },
+        )
+
     # -- Resume continuation (Phase 26) --------------------------------------
 
     async def continue_run(self, run_context: RunContext) -> AgentRunResult:
@@ -537,6 +590,14 @@ class AgentOrchestrator:
         )
 
         if prior_outcome in (RuntimeOutcome.WAITING_FOR_USER, RuntimeOutcome.WAITING_FOR_APPROVAL):
+            # Phase 43: a document-selection resume re-runs the scope gate with the
+            # user's picked ids (validated against the owned set) to attach the
+            # resolved evidence — or re-clarify if still ambiguous — before
+            # generating the grounded answer over the SAME run.
+            if self._scope_gate is not None and resume.get("pending_action") == "select_document":
+                decision = await self._scope_gate.evaluate(run_context, is_resume=True)
+                if decision.action == "clarify":
+                    return self._scope_clarification_result(run_context, decision)
             return await self._continue_generation(run_context, resume, behavior_path)
         return self._defer_continuation(run_context, resume, prior_outcome, behavior_path)
 

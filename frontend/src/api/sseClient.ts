@@ -6,7 +6,7 @@
 // abort/cancel, and 401. Does NOT buffer the whole answer before delivering it —
 // each frame is dispatched as soon as it is parsed.
 
-import type { RuntimeEvent } from './types';
+import type { ExplicitContextMode, RuntimeEvent } from './types';
 
 export class UnauthorizedError extends Error {
   constructor() {
@@ -25,6 +25,9 @@ export interface StreamRequestBody {
   user_request: string;
   thread_id?: string | null;
   metadata?: Record<string, unknown> | null;
+  selected_document_ids?: string[];
+  selected_page_numbers?: number[];
+  explicit_context_mode?: ExplicitContextMode;
 }
 
 /** Parse a single SSE frame block ("event: x\ndata: {...}") into a RuntimeEvent. */

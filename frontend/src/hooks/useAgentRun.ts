@@ -5,7 +5,7 @@
 
 import { useCallback, useReducer, useRef } from 'react';
 import { resumeAgentRun, ApiError, ConflictError } from '../api/agentClient';
-import { UnauthorizedError } from '../api/sseClient';
+import { UnauthorizedError, type StreamRequestBody } from '../api/sseClient';
 import type { ResumeResolution } from '../api/types';
 import { runReducer } from '../state/runReducer';
 import { canSubmit, initialRunState, type RunState } from '../state/runTypes';
@@ -13,9 +13,10 @@ import { useRuntimeStream } from './useRuntimeStream';
 
 export interface AgentRunApi {
   state: RunState;
-  submit: (request: string) => void;
+  submit: (request: string, threadId?: string | null, selectedDocumentIds?: string[]) => void;
   cancel: () => void;
   resume: (resolution: ResumeResolution) => void;
+  resumeWithDocuments: (documentIds: string[]) => void;
   reset: () => void;
 }
 
@@ -26,26 +27,43 @@ function safeStreamError(error: unknown) {
   return { message: 'The connection was interrupted. You can retry.', retryable: true };
 }
 
-export function useAgentRun(baseUrl = ''): AgentRunApi {
+export function useAgentRun(
+  baseUrl = '',
+  onThreadCreated?: (threadId: string) => void,
+): AgentRunApi {
   const [state, dispatch] = useReducer(runReducer, initialRunState);
   const stream = useRuntimeStream(baseUrl);
   // Synchronous guard: prevents a duplicate resume even when two calls fire in
   // the same render tick (React batches state, so `state.resuming` would be stale).
   const resumingRef = useRef(false);
+  // Keep the latest thread-created callback without re-creating `submit`.
+  const onThreadCreatedRef = useRef(onThreadCreated);
+  onThreadCreatedRef.current = onThreadCreated;
 
   const submit = useCallback(
-    (request: string) => {
+    (request: string, threadId?: string | null, selectedDocumentIds?: string[]) => {
       const trimmed = request.trim();
       if (!trimmed || !canSubmit(state.status)) return;
-      dispatch({ type: 'SUBMIT', request: trimmed, threadId: state.threadId });
-      stream.start(
-        { user_request: trimmed, thread_id: state.threadId },
-        {
-          onEvent: (event) => dispatch({ type: 'RUNTIME_EVENT', event }),
-          onError: (error) => dispatch({ type: 'STREAM_ERROR', error: safeStreamError(error) }),
-          onDone: () => dispatch({ type: 'STREAM_DONE' }),
+      const resolvedThreadId = threadId !== undefined ? threadId : state.threadId;
+      dispatch({ type: 'SUBMIT', request: trimmed, threadId: resolvedThreadId });
+      const body: StreamRequestBody = { user_request: trimmed, thread_id: resolvedThreadId };
+      if (selectedDocumentIds && selectedDocumentIds.length > 0) {
+        body.selected_document_ids = selectedDocumentIds;
+        body.explicit_context_mode = 'selected';
+      }
+      stream.start(body, {
+        onEvent: (event) => {
+          dispatch({ type: 'RUNTIME_EVENT', event });
+          // The first message in a new conversation auto-creates a thread server
+          // side; surface the id so the sidebar can refresh + track it.
+          const tid = event.data.thread_id;
+          if (typeof tid === 'string' && tid && tid !== resolvedThreadId) {
+            onThreadCreatedRef.current?.(tid);
+          }
         },
-      );
+        onError: (error) => dispatch({ type: 'STREAM_ERROR', error: safeStreamError(error) }),
+        onDone: () => dispatch({ type: 'STREAM_DONE' }),
+      });
     },
     [state.status, state.threadId, stream],
   );
@@ -87,12 +105,19 @@ export function useAgentRun(baseUrl = ''): AgentRunApi {
     [state.checkpointId, baseUrl],
   );
 
+  const resumeWithDocuments = useCallback(
+    (documentIds: string[]) => {
+      resume({ kind: 'clarification', value: documentIds });
+    },
+    [resume],
+  );
+
   const reset = useCallback(() => {
     stream.stop();
     dispatch({ type: 'RESET' });
   }, [stream]);
 
-  return { state, submit, cancel, resume, reset };
+  return { state, submit, cancel, resume, resumeWithDocuments, reset };
 }
 
 type ResolutionInput = ResumeResolution;

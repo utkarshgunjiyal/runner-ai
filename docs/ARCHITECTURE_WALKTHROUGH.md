@@ -46,6 +46,24 @@ Qdrant — the most relevant document chunks, under an explicit **context budget
 caps token cost. *Trade-off:* retrieval can miss evidence; the evaluator/repair
 loop can request more context.
 
+### 3b. Thread/document scoping + connector eligibility (Phase 43)
+Before planning, the request is scoped to **one user's** conversation and
+documents. Auth supplies `user_id` (never client-asserted); the thread is
+validated as owned; a deterministic **interpreter** classifies intent and scope;
+a **resolver** maps any document reference to owned `document_id`s (client
+`selected_document_ids` are *hints*, revalidated against the thread's Mongo
+document set). An early **Scope Gate** pauses `WAITING_FOR_USER` with a safe
+candidate list when a document reference is ambiguous/unauthorized; otherwise it
+attaches labelled document-chunk evidence. Retrieval filters Qdrant by `user_id`
+plus the validated document-id set. In parallel, **connector eligibility** filters
+the capability catalog so the planner never sees a tool whose connector is
+missing/unhealthy or lacks the required scopes. *Why:* ownership and eligibility
+are decided deterministically and early, so the planner only ever operates over
+data and tools the user actually owns. *Trade-off:* an extra pre-planning stage,
+in exchange for hard scope boundaries and no cross-thread/user leakage. See
+[`THREAD_DOCUMENT_MODEL.md`](./THREAD_DOCUMENT_MODEL.md) and
+[`CONNECTORS.md`](./CONNECTORS.md).
+
 ### 4. Capability retrieval (Unified Capability Registry)
 Tools are **capabilities** from mounted *sources* (internal adapters, optional
 MCP servers, future sources) unified into one registry. A hybrid retriever

@@ -121,6 +121,8 @@ def build_default_runtime(
     final_hybrid_pipeline=None,
     answer_evaluator=None,
     max_repair_rounds: int = 1,
+    scope_gate=None,
+    connector_eligibility: bool = False,
     mcp_registry_manager=None,
     capability_sources: list[CapabilitySource] | None = None,
     capability_registry: UnifiedCapabilityRegistry | None = None,
@@ -164,6 +166,14 @@ def build_default_runtime(
         reranker=reranker or NullReranker(),
     )
 
+    # Phase 43: when connector eligibility is enabled, wrap the retriever so the
+    # planner never sees a capability whose connector is missing/unhealthy or
+    # lacks required scopes. Default off → the retriever is unchanged.
+    if connector_eligibility:
+        from app.agent.connectors import EligibilityCapabilityRetriever
+
+        retriever = EligibilityCapabilityRetriever(retriever)
+
     direct_runtime = DirectRuntime(retriever, executor, top_k=top_k)
     planner_runtime = PlannerRuntime(direct_runtime, retriever, top_k=top_k)
 
@@ -191,6 +201,7 @@ def build_default_runtime(
         plan_source=plan_source,
         answer_evaluator=answer_evaluator,
         max_repair_rounds=max_repair_rounds,
+        scope_gate=scope_gate,
     )
 
 

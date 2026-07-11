@@ -47,10 +47,64 @@ export interface RuntimeEvent {
   data: Record<string, JsonValue>;
 }
 
+/** How the run should scope document context. */
+export type ExplicitContextMode = 'none' | 'all' | 'selected';
+
 export interface AgentRunRequest {
   user_request: string;
   thread_id?: string | null;
   metadata?: Record<string, JsonValue> | null;
+  selected_document_ids?: string[];
+  selected_page_numbers?: number[];
+  explicit_context_mode?: ExplicitContextMode;
+}
+
+/** A thread as returned by GET /threads and POST /threads. */
+export interface ThreadSummary {
+  thread_id: string;
+  title: string;
+  updated_at: string;
+  created_at?: string;
+  message_count: number;
+}
+
+/** A persisted message in a thread (GET /threads/{id}/messages). */
+export interface ThreadMessage {
+  seq: number;
+  role: string;
+  content: string;
+  created_at: string;
+}
+
+/** A document attached to a thread (GET /threads/{id}/documents). */
+export interface ThreadDocument {
+  document_id: string;
+  filename: string;
+  status: string;
+  page_count: number;
+  created_at: string;
+}
+
+/** A candidate document offered when a run pauses to disambiguate. */
+export interface DocumentCandidate {
+  document_id: string;
+  filename: string;
+  created_at: string;
+}
+
+/** 202 response from POST /documents/upload. */
+export interface DocumentUploadResult {
+  document_id: string;
+  job_id: string;
+  status: string;
+}
+
+/** GET /documents/{id} — carries at least a status; other fields optional. */
+export interface DocumentStatusResult {
+  status: string;
+  document_id?: string;
+  filename?: string;
+  page_count?: number;
 }
 
 /** POST /agent/resume response (also the shape /agent/run returns). */

@@ -1,7 +1,7 @@
 // Run lifecycle state model (Phase 41B). An explicit state machine, not a bag
 // of booleans — events drive transitions and invalid actions are prevented.
 
-import type { AgentRunResponse, RuntimeEvent, RuntimeOutcome } from '../api/types';
+import type { AgentRunResponse, DocumentCandidate, RuntimeEvent, RuntimeOutcome } from '../api/types';
 
 export type RunStatus =
   | 'idle'
@@ -52,6 +52,7 @@ export interface RunState {
   pendingReason: string | null;
   error: SafeError | null;
   resuming: boolean;
+  documentCandidates: DocumentCandidate[];
 }
 
 export type RunAction =
@@ -78,6 +79,7 @@ export const initialRunState: RunState = {
   pendingReason: null,
   error: null,
   resuming: false,
+  documentCandidates: [],
 };
 
 /** The waiting statuses map 1:1 to the waiting outcomes. */

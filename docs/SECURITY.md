@@ -63,6 +63,33 @@ marked prompts reach a genuine HITL pause. It is safe by construction:
 - Tests (`tests/agent/test_demo_evaluator.py`, `tests/deploy/test_startup_guard.py`)
   prove it is inert unless explicitly enabled and cannot activate in production.
 
+## Thread/document scoping & connectors (Phase 43)
+
+- **`user_id` from auth only.** Ownership always derives from the authenticated
+  principal; it is never read from the request body.
+- **`selected_document_ids` are hints, not authorization.** The backend
+  revalidates every id against the thread's Mongo document set on both the initial
+  request and on resume. An id the thread does not own is dropped/rejected — a
+  client cannot widen its access by asserting ids.
+- **No cross-thread / cross-user document access.** Documents and chunks are
+  scoped by `thread_id` and `user_id`; retrieval filters Qdrant by `user_id` plus
+  the validated document-id set, so one thread (or user) can never read another's
+  documents.
+- **Document candidates are safe metadata only.** The ambiguity picker exposes
+  just `document_id`, `filename`, and `created_at` — no chunk text, no internals,
+  no other users' data.
+- **`credential_reference` is opaque.** A connector's `credential_reference` is a
+  pointer, never a raw token; it is marked `repr=False` and is never logged,
+  serialized into a `ToolSpec`/`RuntimeEvent`/metric label, or returned by the
+  API.
+- **Eligibility ≠ approval.** Connector eligibility only controls whether a
+  capability is *visible* to the planner (existence + health + scopes). Write /
+  external actions still stop for approval before execution via the existing
+  policy/evaluator path.
+- **Real OAuth / secret storage deferred.** There is **no** per-user OAuth, token
+  acquisition/refresh, or secret storage today — only the metadata/status/
+  eligibility boundary. See [`CONNECTORS.md`](./CONNECTORS.md).
+
 ## Data handling
 
 - Prompts, document contents, and provider payloads are **not logged** by default

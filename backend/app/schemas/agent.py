@@ -18,6 +18,13 @@ class AgentRunRequest(BaseModel):
 
     user_request: str = Field(min_length=1)
     thread_id: str | None = None
+    # Phase 43: optional document-scope hints from the UI. These are HINTS only —
+    # the backend revalidates every id against the thread's owned document set
+    # (the client never asserts ownership). explicit_context_mode ∈
+    # {"none","all","selected"} lets the UI force a scope.
+    selected_document_ids: list[str] | None = None
+    selected_page_numbers: list[int] | None = None
+    explicit_context_mode: str | None = None
     metadata: dict | None = None
 
     @field_validator("user_request")
@@ -26,6 +33,27 @@ class AgentRunRequest(BaseModel):
         if not value or not value.strip():
             raise ValueError("user_request must be a non-empty string")
         return value
+
+    @field_validator("explicit_context_mode")
+    @classmethod
+    def _valid_mode(cls, value):
+        if value is None:
+            return None
+        normalized = str(value).strip().lower()
+        if normalized not in {"none", "all", "all_thread_documents", "selected"}:
+            raise ValueError("explicit_context_mode must be 'none', 'all', or 'selected'")
+        return normalized
+
+    def scope_metadata(self) -> dict:
+        """Fold the safe scope hints into run metadata for the scope gate."""
+        merged = dict(self.metadata or {})
+        if self.selected_document_ids is not None:
+            merged["selected_document_ids"] = list(self.selected_document_ids)
+        if self.selected_page_numbers is not None:
+            merged["selected_page_numbers"] = list(self.selected_page_numbers)
+        if self.explicit_context_mode is not None:
+            merged["explicit_context_mode"] = self.explicit_context_mode
+        return merged
 
 
 class ResolutionPayload(BaseModel):
