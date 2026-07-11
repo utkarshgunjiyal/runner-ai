@@ -1,10 +1,14 @@
-import { useState, type ChangeEvent } from 'react';
-import type { ThreadDocument } from '../../api/types';
+import { useEffect, useRef, type ChangeEvent } from 'react';
+import { getDocumentStatus } from '../../api/documentsClient';
+import { useUpload } from '../../hooks/useUpload';
+import type { DocumentStatusResult, DocumentUploadResult, ThreadDocument } from '../../api/types';
 
 /**
  * Lists the active thread's documents with checkboxes (selected ids feed the run
- * scope) and an upload input. Non-completed documents show their indexing status
- * and cannot be selected until ready. Functional, not polished.
+ * scope) and an upload input. The upload flow is a small state machine (see
+ * useUpload): the filename stays visible while uploading, failures show a safe
+ * inline retry message, the file clears only on success, and indexing status is
+ * polled in the background. Functional, not polished.
  */
 export function DocumentSelector({
   documents,
@@ -12,25 +16,39 @@ export function DocumentSelector({
   onToggle,
   onUpload,
   disabled = false,
+  activeThreadId = null,
+  onRefreshDocuments,
+  pollStatus,
+  baseUrl = '',
 }: {
   documents: ThreadDocument[];
   selectedIds: string[];
   onToggle: (documentId: string) => void;
-  onUpload: (file: File) => Promise<void> | void;
+  onUpload: (file: File) => Promise<DocumentUploadResult | void> | void;
   disabled?: boolean;
+  activeThreadId?: string | null;
+  onRefreshDocuments?: () => void | Promise<void>;
+  pollStatus?: (documentId: string) => Promise<DocumentStatusResult>;
+  baseUrl?: string;
 }) {
-  const [uploading, setUploading] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const upload = useUpload({
+    onUpload,
+    onRefreshDocuments,
+    pollStatus: pollStatus ?? ((id: string) => getDocumentStatus(id, baseUrl)),
+    activeThreadId,
+  });
 
-  const handleFile = async (e: ChangeEvent<HTMLInputElement>) => {
+  // Clear the native <input> only after the selection is cleared (success/reset),
+  // never immediately — so the chosen file stays visible during the upload.
+  useEffect(() => {
+    if (upload.filename === null && inputRef.current) inputRef.current.value = '';
+  }, [upload.filename]);
+
+  const handleFile = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    e.target.value = ''; // allow re-uploading the same file
     if (!file) return;
-    setUploading(true);
-    try {
-      await onUpload(file);
-    } finally {
-      setUploading(false);
-    }
+    upload.selectFile(file);
   };
 
   return (
@@ -39,15 +57,34 @@ export function DocumentSelector({
         <span className="doc-selector-title">Documents</span>
         <label className="doc-upload">
           <input
+            ref={inputRef}
             type="file"
             className="doc-upload-input"
             onChange={handleFile}
-            disabled={disabled || uploading}
+            disabled={disabled || upload.busy}
             data-testid="doc-upload-input"
           />
-          {uploading ? 'Uploading…' : 'Upload'}
+          {upload.busy ? 'Uploading…' : 'Upload'}
         </label>
       </div>
+      {upload.filename ? (
+        <p className="doc-upload-status" data-testid="doc-upload-filename">
+          {upload.filename}
+        </p>
+      ) : null}
+      {upload.error ? (
+        <div className="doc-upload-error" data-testid="doc-upload-error">
+          <span>{upload.error}</span>
+          <button
+            type="button"
+            className="btn btn-ghost doc-upload-retry"
+            onClick={upload.retry}
+            data-testid="doc-upload-retry"
+          >
+            Retry
+          </button>
+        </div>
+      ) : null}
       {documents.length === 0 ? (
         <p className="doc-empty">No documents in this conversation.</p>
       ) : (

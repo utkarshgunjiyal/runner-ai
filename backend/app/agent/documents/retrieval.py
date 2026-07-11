@@ -13,6 +13,57 @@ strictly by ``user_id`` and the caller-provided (Mongo-validated) document id se
 
 from __future__ import annotations
 
+from itertools import zip_longest
+
+# Balanced comparison retrieval defaults (Phase 44). Configurable constants — not
+# hardcoded throughout. Each selected document contributes up to
+# PER_DOCUMENT_CHUNK_QUOTA chunks before a global FINAL_CHUNK_BUDGET is enforced,
+# so one document cannot consume the whole top-K.
+PER_DOCUMENT_CHUNK_QUOTA = 5
+FINAL_CHUNK_BUDGET = 16
+
+
+def _dedup_key(hit: dict) -> tuple:
+    return (str(hit.get("document_id")), hit.get("page"), (hit.get("text") or "")[:160])
+
+
+async def balanced_per_document_retrieve(
+    *,
+    retriever_fn,
+    query: str,
+    user_id: str,
+    document_ids: list[str],
+    pages: list[int] | None = None,
+    per_document: int = PER_DOCUMENT_CHUNK_QUOTA,
+    final_budget: int = FINAL_CHUNK_BUDGET,
+) -> list[dict]:
+    """Retrieve independently per document (a quota each), then round-robin merge
+    with de-duplication and a final budget — so multi-document comparison keeps
+    balanced, source-labelled evidence and no single document dominates."""
+    per_doc: list[list[dict]] = []
+    for doc_id in document_ids:
+        hits = await retriever_fn(
+            query=query, user_id=user_id, document_ids=[doc_id], pages=pages, top_k=per_document
+        )
+        per_doc.append(list(hits or [])[:per_document])
+
+    merged: list[dict] = []
+    seen: set = set()
+    # Round-robin across documents so every document contributes before any
+    # document contributes a second chunk.
+    for group in zip_longest(*per_doc):
+        for hit in group:
+            if hit is None:
+                continue
+            key = _dedup_key(hit)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(hit)
+            if len(merged) >= final_budget:
+                return merged
+    return merged
+
 
 def build_scoped_document_retriever(*, embed_fn=None, search_fn=None):
     """Return ``async retrieve(query, user_id, document_ids, pages, top_k) -> hits``.

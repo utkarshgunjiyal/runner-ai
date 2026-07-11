@@ -81,8 +81,20 @@ async def upload_document(
     storage_key = f"{user_id}/threads/{thread_segment}/{uuid.uuid4().hex}/{filename}"
 
     # Store raw bytes first; only then create records + enqueue so a failed
-    # upload never leaves an orphaned job pointing at missing storage.
-    await storage_service.put_object(storage_key, data, content_type)
+    # upload never leaves an orphaned job pointing at missing storage. A storage
+    # outage becomes a SAFE, coded error — never a raw stack trace (Phase 44).
+    try:
+        await storage_service.put_object(storage_key, data, content_type)
+    except Exception as exc:  # noqa: BLE001 - map any storage failure to a safe error
+        logger.warning(
+            "document.storage_unavailable",
+            extra={"error_type": type(exc).__name__, "storage_key_prefix": storage_key.split("/")[0]},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={"error_code": "document_storage_unavailable",
+                    "message": "Document storage is temporarily unavailable. Please try again."},
+        ) from exc
 
     document = await document_service.create_document(
         user_id=user_id,

@@ -98,6 +98,23 @@ def _tool_content(section) -> str:
     return f"{label} -> {json.dumps(section.output, sort_keys=True)}"
 
 
+def _evidence_label(section) -> str:
+    """Source label prefix for a document evidence section (Phase 44) so the
+    model can separate and cite documents: ``[DOCUMENT: x.pdf] [PAGE: 2] ``.
+    Non-document evidence gets no prefix (unchanged)."""
+    meta = section.metadata or {}
+    filename = meta.get("filename")
+    if not filename and str(section.source or "").startswith("document:"):
+        filename = str(section.source).split("document:", 1)[1]
+    if not filename:
+        return ""
+    label = f"[DOCUMENT: {filename}] "
+    page = meta.get("page")
+    if page is not None:
+        label += f"[PAGE: {page}] "
+    return label
+
+
 def render_final_prompt(final_prompt: FinalPrompt) -> list[FinalPromptMessage]:
     """Flatten a FinalPrompt into ordered, provider-neutral messages.
 
@@ -123,7 +140,7 @@ def render_final_prompt(final_prompt: FinalPrompt) -> list[FinalPromptMessage]:
         messages.append(
             FinalPromptMessage(
                 role=MessageRole.EVIDENCE,
-                content=f"[{section.id}] {section.content}",
+                content=f"{_evidence_label(section)}[{section.id}] {section.content}",
                 metadata={"id": section.id, "source": section.source, "score": section.score},
             )
         )

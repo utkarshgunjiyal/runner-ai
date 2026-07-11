@@ -75,8 +75,8 @@ config-free and unit-testable without a database or credentials.
 | Field | Value |
 |---|---|
 | **Branch** | `v2-autonomous-platform` |
-| **Latest commit** | `V2 Phase 43: Thread, Document Scope, Context & Connector Integration` |
-| **Test count** | **767 backend** (`662` `tests/agent`, `52` `tests/api`, `32` `tests/ops`, `21` `tests/deploy`) + **50 frontend** (Vitest) |
+| **Latest commit** | `V2 Phase 44: Stabilization, Retrieval Quality & UX Reliability` |
+| **Test count** | **793 backend** + **63 frontend** (Vitest) |
 | **Python** | 3.11 (developed on 3.11.15) |
 | **Test command** | `cd backend && python -m pytest` |
 
@@ -494,6 +494,60 @@ the existing planner/executor runtime (steps 5–7 unchanged). Docs:
   validated document-id set (`MatchAny`) + optional pages; new chunks carry
   `thread_id`/`filename`/`source_type` (backward compatible; old user-global
   chunks stay retrievable within a thread via their document-id set).
+
+### Phase 44 — Stabilization, Retrieval Quality & UX Reliability
+Correctness and reliability hardening on top of the Phase 43 scope layer — no new
+architecture, no new runtime stage. The Phase 43 ambiguity contract
+(`WAITING_FOR_USER` + `pending_action="select_document"` + safe candidates + same
+run/thread/checkpoint on resume) is **unchanged**; Phase 44 tightens *when* it
+triggers and improves the quality of the answer once documents are resolved. Docs:
+[`docs/THREAD_DOCUMENT_MODEL.md`](../../../docs/THREAD_DOCUMENT_MODEL.md),
+[`docs/ARCHITECTURE_WALKTHROUGH.md`](../../../docs/ARCHITECTURE_WALKTHROUGH.md).
+- **Hardened ambiguity policy.** A vague document reference ("this document", "the
+  report", "the PDF", "that file") auto-resolves **only** when (a) exactly one
+  document exists in the thread, (b) the UI explicitly selected documents, or (c)
+  the immediate prior turn genuinely referenced exactly one document (read from the
+  last assistant message's persisted `resolved_document_ids`). Weak signals — "last
+  uploaded", "last indexed", "newest/last in list" — **never** silently resolve a
+  vague phrase when multiple documents exist; the run pauses for the user instead.
+- **Comparison-aware balanced retrieval.** For multiple selected documents /
+  `document_comparison`, retrieval is balanced **per document**: each document gets
+  its own quota (`PER_DOCUMENT_CHUNK_QUOTA = 5`, configurable), round-robin merged
+  with de-duplication under a `FINAL_CHUNK_BUDGET = 16`, so no single document
+  dominates the evidence. Chunk metadata (`document_id`, `filename`, `page`,
+  `chunk_id`, `source_type`, `score`) is preserved.
+- **Source-aware final context.** Document evidence is rendered with
+  `[DOCUMENT: filename] [PAGE: n]` labels; for multi-document/comparison the answer
+  prompt requires a separate labelled section per document plus
+  Similarities/Differences, source-aware citations (`resume.pdf p.1`), and
+  **forbids merging facts/identities across documents**.
+- **Hybrid/lexical reranking.** A deterministic BM25 lexical reranker scores query
+  terms (Python, FastAPI, SQL, AWS, React, LangGraph, …) over the **chunk text** and
+  blends with the (hash-stub) dense score, so technical-skill queries surface skills
+  chunks over biographical/leadership narrative. No new vector DB, no live/paid model.
+- **Tool/intent routing fixes.** `get_page_summary` is gated to **explicit page
+  references** only; broad "summarize this document"/"what is this about?" route to
+  document summary/retrieval. `save_user_preference` (a write) is gated to
+  **explicit** preference-save language ("remember that…", "from now on…", "save this
+  preference") — casual chat and persistence-test messages never trigger a preference
+  write. Implemented as an intent **capability gate** that keeps ineligible tools out
+  of the planner's candidate set.
+- **New conversation semantics.** The sidebar "New conversation" creates a
+  persistent thread immediately (`POST /threads`), makes it active, and clears
+  messages/documents/run/checkpoint/HITL + selected docs; a failure is surfaced, not
+  silent.
+- **Upload reliability.** The document selector keeps the filename visible during
+  upload, shows Uploading…/inline safe errors, clears the file only on success, and
+  the client auto-polls `GET /documents/{id}` until completed/failed (bounded
+  interval + max duration), refreshing thread documents and cancelling on thread
+  switch/unmount. Runtime activity is **collapsed by default** (still functional; no
+  chain-of-thought, no raw prompts, no secrets).
+- **Safe storage errors.** MinIO/storage failures on upload return a coded
+  `document_storage_unavailable` (503) — never a raw stack trace.
+- **Config.** The Caddy backend matcher now includes `/threads` and `/threads/*`;
+  docker-compose backend MinIO creds come from `${MINIO_ACCESS_KEY:-minioadmin}` /
+  `${MINIO_SECRET_KEY:-minioadmin}` / `${MINIO_BUCKET:-runner-uploads}` /
+  `${MINIO_SECURE:-false}` (not hardcoded).
 
 ---
 
@@ -930,6 +984,7 @@ reason — most of the codebase relies on them.
 | **Phase 42A ✅** | **Production Hardening, CI/CD, Observability & Deployment** | *Done.* Metrics abstraction + `/metrics`, correlation ids, `/health/{live,ready}`, SSE heartbeat + disconnect cancellation, rate limiting (Redis + fallback), security headers, hardened Docker + frontend image + `docker-compose.prod.yml`, GitHub Actions CI, ESLint 9 migration, docs. Opt-in/safe-by-default; runtime unchanged. |
 | **Phase 42B ✅** | **Deployment, Demo & Interview Readiness** | *Done.* Single-VM topology (Caddy+HTTPS, internal infra, resource limits, log rotation) + demo override; production auth **startup guard** (no silent `dev_user`); off-by-default **demo mode** (genuine checkpoint/resume via the existing evaluator seam); env validation; deploy/update/rollback/backup/restore/smoke scripts; shellcheck + compose + proxy CI + guarded manual deploy; interview/architecture/positioning/video docs. Locked runtime untouched. |
 | **Phase 43 ✅** | **Thread/Document/Context/Connector Integration** | *Done.* Deterministic pre-planning scope layer: interpreter (intent vs scope), ownership-validated document resolver, early **Scope Gate** (ambiguous/unauthorized doc ref → `WAITING_FOR_USER` + safe candidates + checkpoint, resumes the same run), connectors + capability **eligibility** (existence/health/scopes; MCP-server-vs-connector distinction), `RunRecorder`, thread/document routes on `get_current_user`, Qdrant `search_scoped` (user + validated document-id set + pages/thread). `selected_document_ids` are revalidated hints. **Boundary only** — no real OAuth/token refresh/secret storage; in-memory connector registry; legacy V1.5 routes keep the dev-user stub. |
+| **Phase 44 ✅** | **Stabilization, Retrieval Quality & UX Reliability** | *Done.* Correctness/reliability hardening (no new architecture). Hardened ambiguity policy (auto-resolve only on single-doc / explicit UI selection / prior-turn single doc; weak "last uploaded/indexed/newest" signals never silently resolve); comparison-aware **per-document balanced retrieval** (`PER_DOCUMENT_CHUNK_QUOTA`/`FINAL_CHUNK_BUDGET`, round-robin + de-dup); source-aware final context (`[DOCUMENT] [PAGE]` labels, per-doc sections + Similarities/Differences, no cross-doc merging); deterministic **BM25 lexical reranker** over chunk text; intent **capability gate** (`get_page_summary` → explicit page refs; `save_user_preference` → explicit save language only); instant persistent "New conversation" thread; upload polling/inline-error UX + collapsed runtime activity; safe `document_storage_unavailable` (503); Caddy `/threads` matcher + env-driven MinIO creds. Phase 43 pause/resume contract unchanged; embeddings still the hash stub. |
 
 **Phase 41A current limitations (intentional scope boundary).** Real transports
 ship, but no MCP dependency/live server is required: `agent_mcp_enabled` defaults
@@ -981,24 +1036,37 @@ seam with ownership checks, but the **legacy V1.5 non-agent routes still use the
 dev-user stub** (unchanged). Document resolution is deterministic (the LLM never
 decides ownership).
 
+**Phase 44 current limitations (intentional scope boundary).** Retrieval quality
+now leans on the **BM25 lexical signal**, not a real semantic model — embeddings
+remain the **deterministic hash stub**; wiring a real embedding model is future
+work and slots in behind the existing hybrid-pipeline seam without changing
+callers. Real per-user **OAuth**, token acquisition/refresh, and secret storage are
+still **not implemented** (connector metadata/eligibility boundary only;
+credentials referenced opaquely). **MCP stays off by default.** The legacy V1.5
+non-agent routes keep the **dev-user stub**. The per-document quota and final chunk
+budget are fixed constants (configurable, not adaptive).
+
 ---
 
 ## Test Status
 
-- **Backend:** **767 passing** (1 benign Starlette deprecation warning),
-  `cd backend && python -m pytest`, ~2–3s.
-  - `tests/agent/` — **662** (unit tests for every runtime stage, incl. the
-    DemoEvaluator and the Phase-43 interpreter/resolver/scope-gate/connectors/
-    document-retrieval/thread-document e2e; config-free, fakes + `asyncio.run`).
-  - `tests/api/` — **52** (FastAPI `TestClient` over the routers with injected
-    fakes, incl. the run-recorder wiring; no DB/LLM).
-  - `tests/ops/` — **32** (observability, rate limit, middleware, health, SSE).
-  - `tests/deploy/` — **21** (env validation + production startup guard;
-    config-free, no secret values in output).
-- **Frontend:** **50 passing** (Vitest + jsdom, mocked fetch/streams; incl.
-  threads client, useThreads switching, document picker/selector, thread-switch
-  reset), `cd frontend && npm test`. Also `npm run typecheck`, `npm run lint`,
-  `npm run build` all green.
+- **Backend:** **793 passing** (1 benign Starlette deprecation warning),
+  `cd backend && python -m pytest`, ~2–3s. Phase 44 adds coverage for the hardened
+  ambiguity policy, per-document balanced retrieval, source-aware final context,
+  the BM25 lexical reranker, the intent capability gate, and the safe
+  `document_storage_unavailable` error.
+  - `tests/agent/` — unit tests for every runtime stage, incl. the DemoEvaluator
+    and the Phase-43/44 interpreter/resolver/scope-gate/connectors/document-
+    retrieval/thread-document e2e (config-free, fakes + `asyncio.run`).
+  - `tests/api/` — FastAPI `TestClient` over the routers with injected fakes, incl.
+    the run-recorder and thread routes (no DB/LLM).
+  - `tests/ops/` — observability, rate limit, middleware, health, SSE.
+  - `tests/deploy/` — env validation + production startup guard (config-free, no
+    secret values in output).
+- **Frontend:** **63 passing** (Vitest + jsdom, mocked fetch/streams; incl. threads
+  client, useThreads switching, document picker/selector, thread-switch reset, and
+  the Phase-44 upload flow / polling), `cd frontend && npm test`. Also
+  `npm run typecheck`, `npm run lint`, `npm run build` all green.
 
 ### Major test categories
 - **Models & registries:** `test_tool_registry`, `test_plan_models`,

@@ -73,7 +73,10 @@ def test_thread_wide_question_searches_only_that_threads_documents():
     coord = _coordinator(retriever)
     result = run(coord.start("what do these contracts cover?", "u", thread_id="threadA"))
     assert result.result.runtime_outcome == RuntimeOutcome.COMPLETED
-    assert set(retriever.calls[0]) == {"A1", "A2"}  # both thread-A docs, nothing from B
+    # Phase 44: multi-document scope retrieves balanced per-document (one call
+    # each). The union stays within thread A — nothing from B.
+    called = {d for call in retriever.calls for d in call}
+    assert called == {"A1", "A2"}
 
 
 def test_specific_document_question_scopes_to_one_document():

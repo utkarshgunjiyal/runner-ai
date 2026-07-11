@@ -141,3 +141,51 @@ def test_default_runtime_without_scope_gate_is_unaffected():
     result = run(orch.run("summarize the report", "u", thread_id="t1"))
     # No gate → no pause, no document scope.
     assert result.runtime_outcome == RuntimeOutcome.COMPLETED
+
+
+def test_scope_gate_sets_intent_excluded_capabilities():
+    # Phase 44: a casual message excludes the preference-write + page tools.
+    from app.agent.runtime.context import RunContext
+
+    gate = ScopeGate(thread_documents_fn=_thread_docs, document_retriever_fn=RetrieverSpy())
+    rc = RunContext.create("this is my persistence test message", user_id="u", thread_id="t1")
+    run(gate.evaluate(rc))
+    excluded = set(rc.metadata["excluded_capability_ids"])
+    assert "save_user_preference" in excluded
+    assert "get_page_summary" in excluded
+
+
+def test_prior_turn_reference_resolves_vague_request():
+    # A genuine prior-turn reference (recent_document_fn) resolves a vague phrase
+    # even with multiple documents — but "newest doc" is NOT used as the signal.
+    retriever = RetrieverSpy()
+
+    async def recent(user_id, thread_id):
+        return "d2"
+
+    gate = ScopeGate(
+        thread_documents_fn=_thread_docs, document_retriever_fn=retriever, recent_document_fn=recent,
+    )
+    orch = build_default_runtime(
+        context_engine=FakeContextEngine(), capability_executor=FakeExecutor(), scope_gate=gate,
+    )
+    result = run(orch.run("summarize this document", "u", thread_id="t1"))
+    assert result.runtime_outcome == RuntimeOutcome.COMPLETED
+    assert retriever.calls == [{"document_ids": ["d2"], "pages": None}]
+
+
+def test_no_prior_reference_stays_ambiguous():
+    retriever = RetrieverSpy()
+
+    async def no_recent(user_id, thread_id):
+        return None
+
+    gate = ScopeGate(
+        thread_documents_fn=_thread_docs, document_retriever_fn=retriever, recent_document_fn=no_recent,
+    )
+    orch = build_default_runtime(
+        context_engine=FakeContextEngine(), capability_executor=FakeExecutor(), scope_gate=gate,
+    )
+    result = run(orch.run("summarize this document", "u", thread_id="t1"))
+    assert result.runtime_outcome == RuntimeOutcome.WAITING_FOR_USER
+    assert retriever.calls == []

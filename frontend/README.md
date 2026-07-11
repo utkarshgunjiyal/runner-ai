@@ -116,6 +116,24 @@ error codes/messages. Raw prompts, secrets, headers, environment, full internal
 state, and stack traces are never displayed. A top-level `ErrorBoundary` keeps a
 render error from leaking internals.
 
+### Threads, documents & reliability (Phase 44)
+- **New conversation.** The sidebar **New conversation** action creates a
+  persistent thread immediately (`POST /threads`), makes it active, and clears the
+  messages, documents, run, checkpoint, HITL state, and any selected documents in
+  one step. A create failure is **surfaced inline**, never silently dropped, so the
+  app never ends up in a half-cleared state pointing at no thread.
+- **Upload polling & error UX.** The document selector keeps the filename visible
+  during upload, shows an **Uploading…** state, and renders inline **safe** errors;
+  the file input is cleared **only on success**. After an upload the client
+  **auto-polls** `GET /documents/{id}` until the document is `completed`/`failed`
+  (bounded poll interval + max duration), refreshing the thread's document list as
+  the status changes — so a document row updates on its own with no manual refresh.
+  Polling is **cancelled on thread switch / unmount** so a stale poll can't write
+  into the wrong thread.
+- **Collapsed runtime activity.** The runtime activity timeline is **collapsed by
+  default** to keep the chat focused; it stays fully functional when expanded and
+  still shows only safe metadata (no chain-of-thought, no raw prompts, no secrets).
+
 ## Demo workflow
 
 1. Start the backend (`cd ../backend && uvicorn app.main:app --reload`).

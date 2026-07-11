@@ -174,6 +174,14 @@ def build_default_runtime(
 
         retriever = EligibilityCapabilityRetriever(retriever)
 
+    # Phase 44: intent-based capability gating (page/preference tools) — active
+    # only when the scope gate is present (it populates the excluded-id set).
+    # Without a scope gate the excluded set is empty, so this is a no-op.
+    if scope_gate is not None:
+        from app.agent.interpret.capability_gate import IntentCapabilityRetriever
+
+        retriever = IntentCapabilityRetriever(retriever)
+
     direct_runtime = DirectRuntime(retriever, executor, top_k=top_k)
     planner_runtime = PlannerRuntime(direct_runtime, retriever, top_k=top_k)
 

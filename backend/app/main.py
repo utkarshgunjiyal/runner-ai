@@ -198,9 +198,25 @@ def _build_scope_gate():
         ]
 
     async def recent_document_fn(user_id, thread_id):
-        docs = await document_service.list_thread_documents(user_id, thread_id)
-        completed = [d for d in docs if d.get("status") == "completed"]
-        return str(completed[0]["_id"]) if completed else None
+        # Phase 44: "recent" must be a GENUINE prior-turn reference — the single
+        # document a recent assistant turn actually resolved to — NOT "the newest
+        # document in the thread" (that weak signal must never silently resolve a
+        # vague reference when multiple documents exist). Returns None when the
+        # immediate prior turns did not clearly reference exactly one document.
+        from app.services import message_service
+
+        messages = await message_service.get_recent_messages(
+            user_id=user_id, thread_id=thread_id, limit=6
+        )
+        for message in reversed(messages):  # most recent first
+            if message.get("role") != "assistant":
+                continue
+            resolved = (message.get("metadata") or {}).get("resolved_document_ids") or []
+            if len(resolved) == 1:
+                return str(resolved[0])
+            # A turn that resolved to 0 or multiple docs is not a single reference.
+            break
+        return None
 
     # Connectors: the shipped registry is empty (no per-user OAuth yet), so no
     # connector-backed capabilities are eligible. Real registry deferred.

@@ -90,6 +90,27 @@ marked prompts reach a genuine HITL pause. It is safe by construction:
   acquisition/refresh, or secret storage today — only the metadata/status/
   eligibility boundary. See [`CONNECTORS.md`](./CONNECTORS.md).
 
+## Stabilization hardening (Phase 44)
+
+- **No accidental preference writes.** `save_user_preference` is a **write**, and
+  it is gated behind an intent capability gate that requires **explicit**
+  preference-save language ("remember that…", "from now on…", "save this
+  preference"). Casual chat and persistence-test messages never reach the write —
+  the tool is kept out of the planner's candidate set unless the intent qualifies,
+  so a user cannot have a preference persisted without asking for it.
+- **Safe storage error.** A MinIO / object-storage failure during upload returns a
+  coded `document_storage_unavailable` (HTTP **503**) — never a raw stack trace,
+  bucket name, or connection string. It joins the existing safe-error posture.
+- **MinIO credentials from env, not hardcoded.** The docker-compose backend reads
+  MinIO settings from the environment (`MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` /
+  `MINIO_BUCKET` / `MINIO_SECURE`, defaulting to the local `minioadmin` dev creds)
+  rather than baking credentials into the compose file — so a real deployment sets
+  them via env/secret manager and rotates them (see "Credentials" above).
+- **Ambiguity candidates stay safe metadata only.** The hardened Phase 44
+  vague-reference policy still pauses through the unchanged Phase 43 contract: the
+  document picker exposes only `document_id`, `filename`, and `created_at` — no
+  chunk text, no internals, no other users' data.
+
 ## Data handling
 
 - Prompts, document contents, and provider payloads are **not logged** by default

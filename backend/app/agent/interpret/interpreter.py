@@ -49,6 +49,19 @@ _WRITE_CUES = (
 
 _PAGE_RE = re.compile(r"\bpage[s]?\s+(\d{1,4})(?:\s*(?:-|to|and|,)\s*(\d{1,4}))?", re.IGNORECASE)
 
+# Explicit, durable preference-save intent only (Phase 44). Casual statements,
+# persistence-test messages, and one-off facts must NOT match.
+_PREFERENCE_CUES = (
+    "remember that", "remember to", "remember i", "remember my", "please remember",
+    "save this preference", "save my preference", "save this as a preference",
+    "from now on", "going forward always", "always use", "always answer",
+    "note that i prefer", "set my preference",
+)
+
+
+def _is_preference_write(text: str) -> bool:
+    return any(cue in text for cue in _PREFERENCE_CUES)
+
 
 def _contains_any(text: str, needles) -> bool:
     return any(n in text for n in needles)
@@ -106,8 +119,11 @@ def interpret_request(
     (revalidated by the resolver, never trusted as authorization here)."""
     text = f" {(user_request or '').lower().strip()} "
     selected = list(selected_document_ids or [])
-    pages = list(page_numbers or []) or _extract_pages(text)
+    text_pages = _extract_pages(text)
+    page_explicit = bool(text_pages)
+    pages = list(page_numbers or []) or text_pages
     doc_refs = _extract_doc_references(text)
+    preference_write = _is_preference_write(text)
 
     connector_scope, required_connectors = _connector_scope(text)
     is_write = _contains_any(text, _WRITE_CUES) and connector_scope != ConnectorScope.NONE
@@ -178,4 +194,6 @@ def interpret_request(
         clarification_required=clarification_required,
         confidence=confidence,
         resolution_source=resolution_source,
+        preference_write=preference_write,
+        page_explicit=page_explicit or bool(page_numbers),
     )

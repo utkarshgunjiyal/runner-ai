@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAgentRun } from '../../hooks/useAgentRun';
 import { useThreads } from '../../hooks/useThreads';
 import { uploadDocument } from '../../api/documentsClient';
-import type { ResumeResolution } from '../../api/types';
+import type { DocumentUploadResult, ResumeResolution } from '../../api/types';
 import { canSubmit, isStreamActive } from '../../state/runTypes';
 import { RuntimeOutcomeBadge } from '../runtime/RuntimeOutcomeBadge';
 import { RuntimeTimeline } from '../runtime/RuntimeTimeline';
@@ -22,6 +22,7 @@ export function ChatShell({ baseUrl = '' }: { baseUrl?: string }) {
   const threads = useThreads(baseUrl);
   const { setActiveThreadId, refreshThreads } = threads;
   const [selectedDocs, setSelectedDocs] = useState<string[]>([]);
+  const [threadError, setThreadError] = useState<string | null>(null);
 
   const onThreadCreated = useCallback(
     (threadId: string) => {
@@ -47,14 +48,24 @@ export function ChatShell({ baseUrl = '' }: { baseUrl?: string }) {
   const onSelectThread = (id: string) => {
     reset(); // abort any active stream + clear run state
     setSelectedDocs([]);
+    setThreadError(null);
     void threads.selectThread(id);
   };
 
-  const onNewThread = () => {
+  // "New conversation" creates a thread immediately (POST /threads), which makes
+  // it active and clears messages/documents. We abort any active stream + clear
+  // run/checkpoint/HITL state first, and surface a safe error on failure (no
+  // silent reset).
+  const onNewThread = useCallback(async () => {
     reset();
     setSelectedDocs([]);
-    void threads.selectThread(null);
-  };
+    setThreadError(null);
+    try {
+      await threads.createThread();
+    } catch {
+      setThreadError('Could not start a new conversation. Please try again.');
+    }
+  }, [reset, threads]);
 
   const onSend = (text: string) => {
     submit(text, threads.activeThreadId, selectedDocs);
@@ -66,15 +77,19 @@ export function ChatShell({ baseUrl = '' }: { baseUrl?: string }) {
     );
   };
 
-  const onUpload = async (file: File) => {
-    let threadId = threads.activeThreadId;
-    if (!threadId) {
-      const created = await threads.createThread();
-      threadId = created.thread_id;
-    }
-    await uploadDocument(file, threadId, baseUrl);
-    await threads.refreshDocuments(threadId);
-  };
+  const onUpload = useCallback(
+    async (file: File): Promise<DocumentUploadResult> => {
+      let threadId = threads.activeThreadId;
+      if (!threadId) {
+        const created = await threads.createThread();
+        threadId = created.thread_id;
+      }
+      return uploadDocument(file, threadId, baseUrl);
+    },
+    [threads, baseUrl],
+  );
+
+  const onRefreshDocuments = useCallback(() => threads.refreshDocuments(), [threads]);
 
   const isDocumentPause =
     state.pendingAction === 'select_document' && state.documentCandidates.length > 0;
@@ -85,7 +100,7 @@ export function ChatShell({ baseUrl = '' }: { baseUrl?: string }) {
         threads={threads.threads}
         activeThreadId={threads.activeThreadId}
         onSelect={onSelectThread}
-        onNew={onNewThread}
+        onNew={() => void onNewThread()}
       />
 
       <div className="chat-shell" data-testid="chat-shell" data-status={state.status}>
@@ -97,6 +112,11 @@ export function ChatShell({ baseUrl = '' }: { baseUrl?: string }) {
         </header>
 
         <main className="chat-main">
+          {threadError ? (
+            <p className="thread-error" role="alert" data-testid="thread-error">
+              {threadError}
+            </p>
+          ) : null}
           <MessageList state={state} history={threads.messages} />
 
           <ToolExecutionCard items={state.timeline} />
@@ -137,6 +157,9 @@ export function ChatShell({ baseUrl = '' }: { baseUrl?: string }) {
             selectedIds={selectedDocs}
             onToggle={toggleDoc}
             onUpload={onUpload}
+            activeThreadId={threads.activeThreadId}
+            onRefreshDocuments={onRefreshDocuments}
+            baseUrl={baseUrl}
           />
           <Composer
             canSend={canSubmit(state.status)}
@@ -145,7 +168,7 @@ export function ChatShell({ baseUrl = '' }: { baseUrl?: string }) {
             onCancel={cancel}
           />
           {state.status === 'completed' || state.status === 'cancelled' ? (
-            <button type="button" className="btn btn-ghost btn-new" onClick={onNewThread} data-testid="new-run-btn">
+            <button type="button" className="btn btn-ghost btn-new" onClick={() => void onNewThread()} data-testid="new-run-btn">
               New request
             </button>
           ) : null}

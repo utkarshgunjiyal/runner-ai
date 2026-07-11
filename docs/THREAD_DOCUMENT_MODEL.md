@@ -154,6 +154,33 @@ authorization**. The backend revalidates every id against the thread's Mongo
 document set; ids that are not owned are dropped/rejected. **Filenames** are used
 only for matching and display — retrieval always uses stable `document_id`s.
 
+### Vague-reference policy (Phase 44 hardening)
+
+A **vague** document reference — "this document", "the report", "the PDF", "that
+file" — carries no filename to match. When multiple documents exist in the thread,
+guessing is unsafe, so Phase 44 tightens exactly when such a phrase may
+auto-resolve. A vague reference resolves automatically **only** in these three
+cases:
+
+1. **Exactly one document** is in the thread (nothing to be ambiguous about).
+2. **The UI explicitly selected documents** (`selected_document_ids`, still
+   revalidated against the owned set).
+3. **The immediate prior turn genuinely referenced exactly one document** — read
+   from the last assistant message's persisted `resolved_document_ids` (the "this"
+   in "and what about this document's dates?" points at what the previous answer
+   was already about).
+
+**Forbidden weak signals.** "Last uploaded", "last indexed", and "newest / last in
+the list" **never** silently resolve a vague phrase when multiple documents exist.
+Recency is not intent. When none of the three cases hold, the run does **not**
+guess — it pauses `WAITING_FOR_USER` with `pending_action="select_document"` and a
+safe candidate list (the unchanged Phase 43 contract; see below). This closes the
+gap where a stale "most recent" document could be silently answered against the
+wrong file.
+
+> The broader `resolver.py` priority list above still applies to *named*
+> references; the vague-reference rules govern only phrases that name no document.
+
 ---
 
 ## Qdrant filter behavior
@@ -179,6 +206,42 @@ vector_store_service.search_scoped(
 
 Called by the runtime **after** Mongo ownership validation, so the document-id
 set passed in is already known to belong to the user's thread.
+
+---
+
+## Comparison-aware retrieval (Phase 44)
+
+When a request resolves to **multiple documents** — a `document_comparison` intent
+or a `selected_documents` scope — flat top-k retrieval tends to let whichever
+document has the strongest chunks dominate the evidence, so the answer silently
+skews toward one file. Phase 44 balances retrieval **per document** instead:
+
+- Each resolved document gets its own quota of candidate chunks
+  (`PER_DOCUMENT_CHUNK_QUOTA`, default **5**, configurable).
+- The per-document candidate lists are **round-robin merged with
+  de-duplication**, under a final `FINAL_CHUNK_BUDGET` (default **16**), so no
+  single document can crowd the others out.
+- Each chunk keeps its metadata (`document_id`, `filename`, `page`, `chunk_id`,
+  `source_type`, `score`) intact through the merge — the labels the final context
+  relies on are never lost.
+
+Single-document requests are unaffected (one document, one quota).
+
+---
+
+## Source-aware final context (Phase 44)
+
+Once chunks are retrieved, the evidence handed to the answer provider is
+**labelled by source** so the model can attribute and separate facts:
+
+- Every document chunk is rendered with `[DOCUMENT: filename] [PAGE: n]` labels.
+- For multi-document / comparison requests, the answer prompt requires a
+  **separate labelled section per document**, plus explicit **Similarities** and
+  **Differences**.
+- Citations are **source-aware** — filename + page, e.g. `resume.pdf p.1`.
+- The prompt **forbids merging facts or identities across documents** (e.g. it must
+  not attribute one résumé's skills to another person), which keeps comparisons
+  honest rather than blending two files into one imagined profile.
 
 ---
 

@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent.documents.resolver import DocumentResolutionStatus, resolve_documents
 from app.agent.interpret import interpret_request
+from app.agent.interpret.capability_gate import disallowed_capability_ids
 from app.agent.runtime.context import EvidenceItem, RunContext
 from app.logging_config import get_logger
 
@@ -109,6 +110,9 @@ class ScopeGate:
             explicit_context_mode=explicit_mode,
         )
         meta["interpretation"] = interpretation.safe_summary()
+        # Intent-based capability gating (Phase 44): keep page/preference tools out
+        # of the planner's candidate set unless the intent is explicit.
+        meta["excluded_capability_ids"] = sorted(disallowed_capability_ids(interpretation))
 
         # Not a document-dependent request → nothing for this gate to do.
         if not interpretation.needs_documents and not selected:
@@ -159,13 +163,32 @@ class ScopeGate:
         resolved_ids = list(resolution.document_ids)
         evidence_count = 0
         if resolved_ids:
-            hits = await self._document_retriever_fn(
-                query=run_context.user_request,
-                user_id=user_id,
-                document_ids=resolved_ids,
-                pages=interpretation.page_numbers or None,
-                top_k=self._top_k,
-            )
+            pages = interpretation.page_numbers or None
+            if len(resolved_ids) > 1:
+                # Comparison / multi-document: balanced per-document retrieval so
+                # every selected document contributes and none dominates.
+                from app.agent.documents import balanced_per_document_retrieve
+
+                hits = await balanced_per_document_retrieve(
+                    retriever_fn=self._document_retriever_fn,
+                    query=run_context.user_request,
+                    user_id=user_id,
+                    document_ids=resolved_ids,
+                    pages=pages,
+                )
+            else:
+                hits = await self._document_retriever_fn(
+                    query=run_context.user_request,
+                    user_id=user_id,
+                    document_ids=resolved_ids,
+                    pages=pages,
+                    top_k=self._top_k,
+                )
+            # Lexical (BM25) reranking so query terms lift the relevant chunks
+            # over the non-semantic hash-stub dense ordering (Phase 44).
+            from app.agent.retriever.lexical import rerank_hits
+
+            hits = rerank_hits(run_context.user_request, hits or [])
             by_id = {str(d.get("document_id") or d.get("_id")): d for d in thread_documents}
             for hit in hits or []:
                 doc_id = str(hit.get("document_id", ""))

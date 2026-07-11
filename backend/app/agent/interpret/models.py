@@ -65,6 +65,13 @@ class RequestInterpretation(BaseModel):
     clarification_required: bool = False
     confidence: float = 1.0
     resolution_source: str = "deterministic"
+    # True only when the user EXPLICITLY asks to persist a durable preference
+    # (Phase 44 — gates the save_user_preference capability so casual chat and
+    # persistence-test messages never trigger a preference write).
+    preference_write: bool = False
+    # True only when the request explicitly references a page (Phase 44 — gates
+    # page-summary tooling so broad summaries don't route to page tools).
+    page_explicit: bool = False
 
     @property
     def primary_intent(self) -> Intent:

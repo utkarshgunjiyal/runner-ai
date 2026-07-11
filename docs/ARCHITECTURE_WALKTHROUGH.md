@@ -64,6 +64,25 @@ in exchange for hard scope boundaries and no cross-thread/user leakage. See
 [`THREAD_DOCUMENT_MODEL.md`](./THREAD_DOCUMENT_MODEL.md) and
 [`CONNECTORS.md`](./CONNECTORS.md).
 
+### 3c. Retrieval quality & intent gating (Phase 44)
+Three deterministic refinements sit inside the existing scoping/retrieval stages —
+no new stage. **Comparison-aware retrieval:** when a request resolves to multiple
+documents (`document_comparison` / `selected_documents`), chunks are retrieved
+**per document** under a fixed quota, then round-robin merged with de-duplication
+under a final budget, so no single file dominates the evidence; the final context
+is then rendered with `[DOCUMENT: filename] [PAGE: n]` labels and forbids merging
+facts across documents. **Lexical reranking:** a deterministic BM25 reranker scores
+query terms over the chunk *text* and blends with the (hash-stub) dense score, so
+technical-skill queries surface the right chunks without a live embedding model.
+**Intent capability gating:** the interpreter's intent keeps ineligible tools out
+of the planner's candidate set — `get_page_summary` only for explicit page
+references, and the `save_user_preference` *write* only for explicit save language
+("remember that…", "from now on…") — so casual chat never triggers a persisted
+write. *Why:* retrieval quality and tool-safety are decided deterministically,
+before the planner runs. *Trade-off:* fixed quotas/keyword signals are simpler and
+testable but coarser than a learned ranker. See
+[`THREAD_DOCUMENT_MODEL.md`](./THREAD_DOCUMENT_MODEL.md).
+
 ### 4. Capability retrieval (Unified Capability Registry)
 Tools are **capabilities** from mounted *sources* (internal adapters, optional
 MCP servers, future sources) unified into one registry. A hybrid retriever

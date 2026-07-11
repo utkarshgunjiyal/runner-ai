@@ -86,6 +86,20 @@ def test_filename_reference_extracted():
     assert any("report.pdf" in ref.lower() for ref in r.raw_document_references)
 
 
+def test_preference_write_only_on_explicit_save_language():
+    assert interpret_request("Remember that I prefer concise answers").preference_write is True
+    assert interpret_request("From now on, use bullet points").preference_write is True
+    assert interpret_request("Save this preference").preference_write is True
+    # Casual / persistence-test / one-off statements must NOT be a preference write.
+    assert interpret_request("This is my persistence test message.").preference_write is False
+    assert interpret_request("my favorite color is blue").preference_write is False
+
+
+def test_page_explicit_flag():
+    assert interpret_request("what is on page 4?", has_thread_documents=True).page_explicit is True
+    assert interpret_request("summarize this document", has_thread_documents=True).page_explicit is False
+
+
 def test_safe_summary_has_no_request_content():
     r = interpret_request("secret question about the acquisition price", has_thread_documents=True)
     s = r.safe_summary()

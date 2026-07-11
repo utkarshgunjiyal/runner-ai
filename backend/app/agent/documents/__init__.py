@@ -17,7 +17,11 @@ from app.agent.documents.resolver import (
     DocumentResolutionStatus,
     resolve_documents,
 )
-from app.agent.documents.retrieval import build_scoped_document_retriever
+from app.agent.documents.retrieval import (
+    PER_DOCUMENT_CHUNK_QUOTA,
+    balanced_per_document_retrieve,
+    build_scoped_document_retriever,
+)
 
 __all__ = [
     "DocumentCandidate",
@@ -25,4 +29,6 @@ __all__ = [
     "DocumentResolutionStatus",
     "resolve_documents",
     "build_scoped_document_retriever",
+    "balanced_per_document_retrieve",
+    "PER_DOCUMENT_CHUNK_QUOTA",
 ]

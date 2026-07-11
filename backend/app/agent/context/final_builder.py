@@ -93,6 +93,7 @@ class FinalContextBuilder:
         tool_output_sections = self._build_tool_outputs(run_context)
         summary = self._build_summary(run_context, evidence_sections, tool_output_sections)
         instructions = self._final_instructions(summary)
+        instructions = self._augment_for_documents(instructions, evidence_sections, run_context)
 
         return FinalPrompt(
             system_prompt=self._system_prompt,
@@ -287,6 +288,32 @@ class FinalContextBuilder:
         )
 
     # -- Final instructions --------------------------------------------------
+
+    @staticmethod
+    def _augment_for_documents(instructions: str, evidence_sections, run_context) -> str:
+        """Phase 44: when evidence spans multiple documents (comparison), require a
+        source-separated, comparison-structured answer with source-aware citations
+        (never merge identities/facts across documents, never cite bare [E#])."""
+        filenames = []
+        for section in evidence_sections:
+            name = (section.metadata or {}).get("filename")
+            if name and name not in filenames:
+                filenames.append(name)
+        interpretation = run_context.metadata.get("interpretation") or {}
+        is_comparison = "document_comparison" in (interpretation.get("intents") or [])
+        if len(filenames) < 2 and not is_comparison:
+            return instructions
+        if len(filenames) >= 2:
+            return (
+                instructions
+                + "\n\nThis request involves multiple documents. Structure the answer with a"
+                " separate labelled section per document (use the document filename as the"
+                " heading), then a 'Similarities' section and a 'Differences' section, and"
+                " note any gaps where relevant. Do NOT merge facts or identities across"
+                " documents. Cite evidence by its source filename and page (for example"
+                " 'my_resume.pdf p.1'), not by a bare evidence id."
+            )
+        return instructions
 
     def _final_instructions(self, summary: ExecutionSummary) -> str:
         if self._final_instructions_override is not None:

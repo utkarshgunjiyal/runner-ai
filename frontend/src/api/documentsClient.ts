@@ -5,6 +5,20 @@
 import { UnauthorizedError } from './sseClient';
 import type { DocumentStatusResult, DocumentUploadResult } from './types';
 
+/**
+ * A failed document request. Carries an optional server request id (from the
+ * `X-Request-ID` header) so the UI can surface a safe correlation ref without
+ * ever exposing raw backend error text.
+ */
+export class DocumentRequestError extends Error {
+  readonly requestId?: string;
+  constructor(message: string, requestId?: string) {
+    super(message);
+    this.name = 'DocumentRequestError';
+    this.requestId = requestId;
+  }
+}
+
 /** POST /documents/upload — multipart upload attached to a thread (202). */
 export async function uploadDocument(
   file: File,
@@ -20,7 +34,10 @@ export async function uploadDocument(
     credentials: 'include',
   });
   if (response.status === 401) throw new UnauthorizedError();
-  if (!response.ok) throw new Error(`upload failed: HTTP ${response.status}`);
+  if (!response.ok) {
+    const requestId = response.headers.get('X-Request-ID') ?? undefined;
+    throw new DocumentRequestError(`upload failed: HTTP ${response.status}`, requestId);
+  }
   return (await response.json()) as DocumentUploadResult;
 }
 
@@ -33,6 +50,9 @@ export async function getDocumentStatus(
     credentials: 'include',
   });
   if (response.status === 401) throw new UnauthorizedError();
-  if (!response.ok) throw new Error(`document status failed: HTTP ${response.status}`);
+  if (!response.ok) {
+    const requestId = response.headers.get('X-Request-ID') ?? undefined;
+    throw new DocumentRequestError(`document status failed: HTTP ${response.status}`, requestId);
+  }
   return (await response.json()) as DocumentStatusResult;
 }

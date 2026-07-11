@@ -79,6 +79,11 @@ body { margin: 0; background: var(--bg); color: var(--text); }
 .timeline-error .timeline-icon { color: var(--error); }
 
 .tool-exec { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel-2); padding: 10px 14px; }
+.tool-exec-toggle {
+  width: 100%; text-align: left; background: none; border: none; color: var(--text);
+  padding: 0; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13px;
+}
+.tool-exec-count { margin-left: auto; color: var(--muted); font-size: 12px; }
 .tool-exec-title { margin: 0 0 8px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
 .tool-exec-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .tool-exec-item { display: flex; justify-content: space-between; font-size: 13px; }
@@ -121,11 +126,15 @@ body { margin: 0; background: var(--bg); color: var(--text); }
 .thread-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thread-count { color: var(--muted); font-size: 12px; }
 .thread-empty { color: var(--muted); font-size: 13px; padding: 6px 10px; }
+.thread-error { color: var(--error); font-size: 13px; margin: 0 0 8px; }
 
 .doc-selector { border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-bottom: 10px; background: var(--panel); }
 .doc-selector-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .doc-selector-title { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
 .doc-upload { font-size: 13px; color: var(--accent); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.doc-upload-status { font-size: 12px; color: var(--muted); margin: 0 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-upload-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--error); margin: 0 0 8px; }
+.doc-upload-retry { padding: 4px 10px; font-size: 12px; }
 .doc-empty { color: var(--muted); font-size: 13px; margin: 0; }
 .doc-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .doc-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; font-size: 13px; cursor: pointer; }

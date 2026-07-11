@@ -28,3 +28,6 @@ redis-data/
 qdrant_storage/
 minio-data/
 uploads/
+
+# Generated patch artifacts
+*.patch
