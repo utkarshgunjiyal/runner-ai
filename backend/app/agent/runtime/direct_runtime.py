@@ -24,7 +24,8 @@ from typing import Protocol
 
 from app.agent.capabilities.models import CapabilityRetrievalRequest
 from app.agent.capabilities.retriever import CapabilityRetriever
-from app.agent.models.tool_spec import ToolSpec
+from app.agent.models.tool_spec import ToolKind, ToolSpec
+from app.agent.runtime import diagnostics
 from app.agent.runtime.context import (
     BehaviorPath,
     RunContext,
@@ -106,6 +107,10 @@ class DirectRuntime:
                 CapabilityRetrievalRequest(query=run_context.user_request, top_k=self._top_k)
             ).matches
 
+        # Diagnostics (Phase 46.2.3): the exact ranked candidate set the direct path
+        # sees — reveals whether search_repositories ranks above or below list_issues.
+        diagnostics.capability_candidates(run_context, matches, path=path.value)
+
         recovery: list[dict] = []
         if not matches:
             # Nothing to run: deterministic ask-user, no execution.
@@ -126,6 +131,15 @@ class DirectRuntime:
 
         # 4-5-6. Select the best capability and execute it once.
         primary = matches[0].tool
+        # Diagnostics (Phase 46.2.3): the chosen capability + its resolved binding.
+        diagnostics.capability_selected(
+            run_context, primary, path=path.value, rank=0, score=matches[0].score
+        )
+        diagnostics.tool_binding_resolved(run_context, primary)
+        if primary.kind == ToolKind.MCP:
+            diagnostics.mcp_tool_invoked(
+                run_context, primary, args, timeout=primary.timeout_seconds, retry_attempt=1
+            )
         result = await self._executor.execute(primary, args)
         attempts = 1
 
@@ -159,9 +173,16 @@ class DirectRuntime:
                     "error_code": result.error_code,
                 }
             )
+            if fallback.kind == ToolKind.MCP:
+                diagnostics.mcp_tool_invoked(run_context, fallback, args,
+                                             timeout=fallback.timeout_seconds, retry_attempt=attempts + 1)
             result = await self._executor.execute(fallback, args)
             attempts += 1
             chosen = fallback
+
+        # Diagnostics (Phase 46.2.3): what actually executed and its outcome.
+        if chosen.kind == ToolKind.MCP:
+            diagnostics.mcp_tool_completed(run_context, chosen, result, attempts=attempts)
 
         # Classify the terminal outcome.
         if result.success and result.partial:

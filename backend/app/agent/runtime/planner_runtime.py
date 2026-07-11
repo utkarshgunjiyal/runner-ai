@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent.capabilities.retriever import CapabilityRetriever
 from app.agent.models.execution import StepExecutionResult, StepStatus
+from app.agent.runtime import diagnostics
 from app.agent.runtime.context import BehaviorPath, BehaviorProfile, RunContext
 from app.agent.runtime.direct_runtime import ExecutionStatus as DirectStatus
 
@@ -120,6 +121,20 @@ class PlannerRuntime:
 
             # 4b. Execute through DirectRuntime — the only execution engine.
             task_context = await self._direct.run(task_context)
+
+            # Diagnostics (Phase 46.2.3): how this plan task resolved to a tool —
+            # reveals whether the planner requested one capability but the task
+            # resolved/executed a different one. Emitted onto the PARENT context so
+            # every diagnostic for the request is traceable together.
+            resolved = (list(task_context.selected_capabilities) or [None])[0]
+            resolved_tool = task_context.tool_outputs[-1] if task_context.tool_outputs else None
+            diagnostics.emit(
+                run_context, "agent.plan_tool_resolved",
+                task_id=task.id,
+                planner_candidates=candidates[:8],
+                resolved_capability=resolved,
+                executed_capability=getattr(resolved_tool, "capability_id", None),
+            )
 
             # 5. Merge results and update ExecutionState.
             self._merge(run_context, task, task_context, candidates)

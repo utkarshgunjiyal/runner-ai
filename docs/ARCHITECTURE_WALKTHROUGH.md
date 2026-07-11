@@ -194,6 +194,22 @@ credentials or bypassing MCP. *Trade-off:* deployment-scoped shared identity, no
 per-user OAuth (restrict access; see [SECURITY.md](./SECURITY.md) and
 [GITHUB_MCP.md](./GITHUB_MCP.md)).
 
+### 12c. Runtime selection diagnostics (Phase 46.2.3)
+Safe, structured diagnostic events (`app/agent/runtime/diagnostics.py`) trace a
+request from the chosen execution path → ranked capability candidates → selected
+capability → resolved tool binding → MCP invocation, plus the planner candidate
+set/plan/task-resolution on the planner path. They are **observability only** (no
+behavior change): each is a log line under `agent.diagnostics` (the JSON formatter
+attaches the request's `request_id`) mirrored onto `run_context.metadata`. Redaction
+is by construction — ids, kinds, scores, matched terms, argument **key names**,
+counts, and codes only; never the token, `Authorization` header, argument values,
+raw payloads, or request/conversation text. The binding is decoded from the ToolSpec
+`handler_ref` (`mcp:<server>:<tool>`) without touching the registry or adapter, and a
+read-only helper (`scripts/diagnose-github-selection.sh`) filters the logs for one
+run. *Why:* when a live request selects the wrong tool, the events isolate the exact
+stage (ranking vs planner-selection vs task-resolution vs binding vs invocation)
+without a parallel tracing system. See [GITHUB_MCP.md](./GITHUB_MCP.md).
+
 ### 13. Frontend state machine + workspace (Phase 45)
 The SPA is a thin transport + presentation layer: a pure reducer maps
 `RuntimeEvent`s to an explicit run state (`idle → streaming →

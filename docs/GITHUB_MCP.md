@@ -161,6 +161,43 @@ GITHUB_MCP_ENABLED=true GITHUB_MCP_TOKEN=ghp_xxx \
   ./scripts/verify-github-mcp.sh
 ```
 
+## Selection diagnostics (Phase 46.2.3)
+
+Safe, structured diagnostic events trace how a request selects a GitHub tool, so a
+wrong-tool report can be pinpointed to a specific stage. They are **diagnostic only**
+— no behavior changes. Each event is logged under `agent.diagnostics` (the JSON log
+line auto-carries the request's `request_id`) and mirrored onto
+`run_context.metadata["diagnostics"]`.
+
+Events, in order, for one request:
+
+| Event | What it reveals |
+| --- | --- |
+| `agent.runtime_path_selected` | `direct` / `planner` / `deterministic_fast_path` + behavior reason + request **hash** (never raw text) + intent labels |
+| `agent.capability_candidates` | the ranked candidates (id, kind, provider, server_id, mcp_tool_name, keyword/final score, matched fields/terms, eligible) — shows whether `search_repositories` ranks above or below `list_issues` |
+| `agent.planner_candidates` / `agent.plan_created` / `agent.plan_tool_resolved` | (planner path) candidate set handed to the planner, the plan's tasks, and each task's resolved/executed tool |
+| `agent.capability_selected` | the chosen capability + final rank/score |
+| `agent.tool_binding_resolved` | decodes `handler_ref` = `mcp:<server_id>:<tool_name>` — proves `mcp.github.search_repositories` → `server=github, tool=search_repositories` |
+| `agent.mcp_tool_invoked` / `agent.mcp_tool_completed` | server/tool, connector status, **argument key names only**, duration, item count, error code, retry count |
+
+**Distinguishing the failure stage:**
+- **Ranking error** → `agent.capability_candidates` shows `list_issues` ranked above `search_repositories`.
+- **Planner-selection error** → path is `planner` and `agent.planner_candidates` / `agent.plan_created` show the planner chose the wrong tool/task.
+- **Task-resolution error** → `agent.plan_tool_resolved` shows a task resolved/executed a different capability than intended.
+- **Registry-binding error** → `agent.tool_binding_resolved` maps a capability id to the wrong `server_id`/`tool_name`.
+- **MCP-invocation error** → `agent.mcp_tool_invoked` shows the tool actually invoked (`tool_name`).
+
+**Redaction guarantee:** these events never contain the token, the `Authorization`
+header, argument **values**, raw MCP payloads, request/conversation text, or issue/PR
+bodies — only ids, kinds, scores, matched terms, argument key names, counts, and codes.
+
+**Trace one request** (read-only; prints only the safe trace and refuses token/auth lines):
+
+```bash
+docker compose logs --no-color backend | ./scripts/diagnose-github-selection.sh --run <run_id>
+# or:  ./scripts/diagnose-github-selection.sh backend.log --request <request_id>
+```
+
 ## Troubleshooting
 
 | Symptom | Likely cause / action |

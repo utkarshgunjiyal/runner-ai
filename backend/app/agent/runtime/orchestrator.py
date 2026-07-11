@@ -50,6 +50,7 @@ from app.agent.llm.provider_adapter import (
 )
 from app.agent.models.final_prompt import FinalPrompt
 from app.agent.repair.runtime import RepairRuntime
+from app.agent.runtime import diagnostics
 from app.agent.runtime.context import BehaviorPath, RunContext
 from app.agent.runtime.events import RuntimeEventType as E
 from app.agent.runtime.outcome import RuntimeOutcome, derive_runtime_outcome
@@ -248,6 +249,10 @@ class AgentOrchestrator:
         # 2. Behavior Gate — attaches behavior_profile + metadata["behavior_decision"].
         self._behavior_gate.decide(run_context)
         path = run_context.behavior_profile.path
+        # Diagnostics (Phase 46.2.3): which execution path this request takes.
+        diagnostics.runtime_path_selected(
+            run_context, path=path.value, reason=run_context.behavior_profile.reason
+        )
 
         # 3. Dispatch to the one execution engine (planner orchestrates direct).
         # Planner-provider failures never execute a guessed plan — they convert
@@ -261,6 +266,17 @@ class AgentOrchestrator:
                 return self._provider_failure_result(
                     run_context, path.value, stage="planner_provider", exc=exc
                 )
+            # Diagnostics (Phase 46.2.3): the plan the planner produced (task ids +
+            # safe request fingerprints only — never the raw request or reasoning).
+            diagnostics.emit(
+                run_context, "agent.plan_created",
+                task_count=len(plan.tasks),
+                tasks=[
+                    {"task_id": t.id, "request_hash": diagnostics.hash12(t.request),
+                     "request_length": len(t.request or ""), "optional": t.optional}
+                    for t in plan.tasks
+                ],
+            )
             run_context = await self._planner_runtime.run(run_context, plan)
         else:
             run_context = await self._direct_runtime.run(run_context)
@@ -474,6 +490,15 @@ class AgentOrchestrator:
             matches = self._capability_retriever.retrieve_for_run_context(
                 run_context, top_k=self._planner_top_k
             ).matches
+        # Diagnostics (Phase 46.2.3): the exact candidate set (ranked) handed to the
+        # planner. This retrieval uses the context-enriched query (no request-only
+        # override), so it reveals whether working-context pollution reorders the
+        # candidates the planner chooses from.
+        diagnostics.capability_candidates(run_context, matches, path="planner")
+        diagnostics.emit(
+            run_context, "agent.planner_candidates",
+            candidate_ids=[m.tool.id for m in matches],
+        )
         return build_planner_prompt(run_context, matches)
 
     def _provider_failure_result(
@@ -596,6 +621,9 @@ class AgentOrchestrator:
         tool outputs, NO retrieval, NO planner, and NO LLM. The evidence list stays
         empty, so no stale/foreign content and no E# citations can appear."""
         from app.agent.documents import format_document_inventory
+
+        # Diagnostics (Phase 46.2.3): the deterministic fast path was taken.
+        diagnostics.runtime_path_selected(run_context, path="deterministic_fast_path")
 
         documents: list[dict] = []
         if run_context.thread_id:
