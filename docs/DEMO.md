@@ -123,9 +123,33 @@ show it end-to-end:
 
 Filenames are only for matching/display; retrieval always uses the stable
 `document_id`. Client-sent `selected_document_ids` are hints, revalidated
-server-side (see [`SECURITY.md`](./SECURITY.md)). The runtime activity timeline is
-**collapsed by default** (expand it to inspect stages — still safe metadata only).
-Details: [`THREAD_DOCUMENT_MODEL.md`](./THREAD_DOCUMENT_MODEL.md).
+server-side (see [`SECURITY.md`](./SECURITY.md)). Details:
+[`THREAD_DOCUMENT_MODEL.md`](./THREAD_DOCUMENT_MODEL.md).
+
+## Workspace UI walkthrough (Phase 45)
+
+The frontend is a three-region **AI workspace**, worth showing on camera:
+
+- **Left rail** — Runner.ai branding, **New conversation**, and the recent list
+  (relative last-activity time + message count; a loading **skeleton**, an empty
+  state, and an **error + Retry** when the backend is unreachable). At the bottom,
+  a truthful **Integrations** section: **GitHub** and **Gmail** show *Not connected
+  — coming next*, **MCP Runtime** shows *Available*. Nothing here implies a live
+  OAuth session — there are no connect actions, and real per-user Gmail/GitHub is
+  **not implemented** (honest limitation).
+- **Center** — the active **thread title** in the header with a live status badge;
+  the conversation; document **scope chips** above the composer showing whether the
+  run searches *all* documents or a restricted selection (remove a chip to widen
+  scope); a sticky composer (**Enter** sends, **Shift+Enter** newlines, **Stop**
+  while streaming). Comparison answers render per-document sections with the
+  **Sources** lifted into filename+page **chips** — no `E#` ids.
+- **Right inspector** — open **Runtime details** from the ⚙ header button (a dot
+  marks new activity). It is **collapsed by default** and holds the status summary,
+  tool activity, and the safe runtime timeline (safe metadata only — no
+  chain-of-thought, prompts, secrets, or payloads).
+
+Resize to show responsiveness: on a tablet the inspector opens as a **sheet**; on a
+phone the sidebar becomes a **drawer** (hamburger) and the composer stays sticky.
 
 ## Show correlation (logs)
 

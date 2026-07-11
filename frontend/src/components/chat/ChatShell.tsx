@@ -1,12 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAgentRun } from '../../hooks/useAgentRun';
 import { useThreads } from '../../hooks/useThreads';
 import { uploadDocument } from '../../api/documentsClient';
-import type { DocumentUploadResult, ResumeResolution } from '../../api/types';
+import type { DocumentUploadResult, ResumeResolution, ThreadDocument } from '../../api/types';
 import { canSubmit, isStreamActive } from '../../state/runTypes';
 import { RuntimeOutcomeBadge } from '../runtime/RuntimeOutcomeBadge';
-import { RuntimeTimeline } from '../runtime/RuntimeTimeline';
-import { ToolExecutionCard } from '../runtime/ToolExecutionCard';
+import { RuntimeInspector } from '../runtime/RuntimeInspector';
 import { ApprovalPanel } from '../hitl/ApprovalPanel';
 import { ClarificationPanel } from '../hitl/ClarificationPanel';
 import { WaitingContextPanel } from '../hitl/WaitingContextPanel';
@@ -17,12 +16,14 @@ import { DocumentSelector } from '../documents/DocumentSelector';
 import { MessageList } from './MessageList';
 import { Composer } from './Composer';
 
-/** Top-level chat experience: threads, documents, streaming answer, HITL panels. */
+/** Top-level workspace: threads, documents, streaming answer, HITL, runtime inspector. */
 export function ChatShell({ baseUrl = '' }: { baseUrl?: string }) {
   const threads = useThreads(baseUrl);
   const { setActiveThreadId, refreshThreads } = threads;
   const [selectedDocs, setSelectedDocs] = useState<string[]>([]);
   const [threadError, setThreadError] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
 
   const onThreadCreated = useCallback(
     (threadId: string) => {
@@ -49,17 +50,18 @@ export function ChatShell({ baseUrl = '' }: { baseUrl?: string }) {
     reset(); // abort any active stream + clear run state
     setSelectedDocs([]);
     setThreadError(null);
+    setSidebarOpen(false);
     void threads.selectThread(id);
   };
 
   // "New conversation" creates a thread immediately (POST /threads), which makes
   // it active and clears messages/documents. We abort any active stream + clear
-  // run/checkpoint/HITL state first, and surface a safe error on failure (no
-  // silent reset).
+  // run/checkpoint/HITL state first, and surface a safe error on failure.
   const onNewThread = useCallback(async () => {
     reset();
     setSelectedDocs([]);
     setThreadError(null);
+    setSidebarOpen(false);
     try {
       await threads.createThread();
     } catch {
@@ -94,21 +96,88 @@ export function ChatShell({ baseUrl = '' }: { baseUrl?: string }) {
   const isDocumentPause =
     state.pendingAction === 'select_document' && state.documentCandidates.length > 0;
 
+  // Header title: backend thread title → first user message → live request → default.
+  const activeThread = useMemo(
+    () => threads.threads.find((t) => t.thread_id === threads.activeThreadId) ?? null,
+    [threads.threads, threads.activeThreadId],
+  );
+  const headerTitle =
+    activeThread?.title?.trim() ||
+    threads.messages.find((m) => m.role === 'user')?.content ||
+    state.request ||
+    'New conversation';
+
+  // Selected documents resolved to {id, filename} for the composer scope chips.
+  const selectedDocuments = useMemo(
+    () =>
+      selectedDocs
+        .map((id) => threads.documents.find((d) => d.document_id === id))
+        .filter((d): d is ThreadDocument => Boolean(d))
+        .map((d) => ({ document_id: d.document_id, filename: d.filename })),
+    [selectedDocs, threads.documents],
+  );
+
+  const hasRuntimeActivity = state.timeline.length > 0;
+
   return (
-    <div className="app-layout" data-testid="app-layout">
+    <div
+      className="app-layout"
+      data-testid="app-layout"
+      data-sidebar-open={sidebarOpen}
+      data-inspector-open={inspectorOpen}
+    >
+      <div
+        className="scrim"
+        data-testid="scrim"
+        onClick={() => {
+          setSidebarOpen(false);
+          setInspectorOpen(false);
+        }}
+        aria-hidden
+      />
+
       <ThreadSidebar
         threads={threads.threads}
         activeThreadId={threads.activeThreadId}
+        loading={threads.loading}
+        error={threads.error}
         onSelect={onSelectThread}
         onNew={() => void onNewThread()}
+        onRetry={() => void refreshThreads()}
       />
 
       <div className="chat-shell" data-testid="chat-shell" data-status={state.status}>
         <header className="chat-header">
-          <div className="brand">
-            <span className="brand-mark">◇</span> Runner.ai
+          <button
+            type="button"
+            className="icon-btn nav-toggle"
+            onClick={() => setSidebarOpen((v) => !v)}
+            aria-label="Toggle conversations"
+            aria-expanded={sidebarOpen}
+            data-testid="sidebar-toggle"
+          >
+            ☰
+          </button>
+          <div className="chat-heading">
+            <h1 className="chat-title" data-testid="chat-title">
+              {headerTitle}
+            </h1>
+            <span className="chat-subtitle">Autonomous agent workspace</span>
           </div>
-          <RuntimeOutcomeBadge status={state.status} />
+          <div className="chat-header-actions">
+            <RuntimeOutcomeBadge status={state.status} />
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => setInspectorOpen((v) => !v)}
+              aria-label="Runtime details"
+              aria-expanded={inspectorOpen}
+              data-testid="inspector-toggle"
+            >
+              ⚙
+              {hasRuntimeActivity ? <span className="icon-dot" aria-hidden /> : null}
+            </button>
+          </div>
         </header>
 
         <main className="chat-main">
@@ -118,9 +187,6 @@ export function ChatShell({ baseUrl = '' }: { baseUrl?: string }) {
             </p>
           ) : null}
           <MessageList state={state} history={threads.messages} />
-
-          <ToolExecutionCard items={state.timeline} />
-          <RuntimeTimeline items={state.timeline} />
 
           {isDocumentPause ? (
             <DocumentPickerPanel
@@ -148,32 +214,57 @@ export function ChatShell({ baseUrl = '' }: { baseUrl?: string }) {
             />
           ) : null}
 
-          {state.resuming ? <p className="resuming-note" data-testid="resuming-note">Continuing the run…</p> : null}
+          {state.resuming ? (
+            <p className="resuming-note" data-testid="resuming-note">
+              <span className="cursor" aria-hidden>
+                ▍
+              </span>
+              Continuing the run…
+            </p>
+          ) : null}
         </main>
 
         <footer className="chat-footer">
-          <DocumentSelector
-            documents={threads.documents}
-            selectedIds={selectedDocs}
-            onToggle={toggleDoc}
-            onUpload={onUpload}
-            activeThreadId={threads.activeThreadId}
-            onRefreshDocuments={onRefreshDocuments}
-            baseUrl={baseUrl}
-          />
-          <Composer
-            canSend={canSubmit(state.status)}
-            isActive={isStreamActive(state.status)}
-            onSend={onSend}
-            onCancel={cancel}
-          />
-          {state.status === 'completed' || state.status === 'cancelled' ? (
-            <button type="button" className="btn btn-ghost btn-new" onClick={() => void onNewThread()} data-testid="new-run-btn">
-              New request
-            </button>
-          ) : null}
+          <div className="chat-footer-inner">
+            <DocumentSelector
+              documents={threads.documents}
+              selectedIds={selectedDocs}
+              onToggle={toggleDoc}
+              onUpload={onUpload}
+              activeThreadId={threads.activeThreadId}
+              onRefreshDocuments={onRefreshDocuments}
+              baseUrl={baseUrl}
+            />
+            <Composer
+              canSend={canSubmit(state.status)}
+              isActive={isStreamActive(state.status)}
+              onSend={onSend}
+              onCancel={cancel}
+              selectedDocuments={selectedDocuments}
+              hasDocuments={threads.documents.length > 0}
+              onRemoveDoc={toggleDoc}
+            />
+            {state.status === 'completed' || state.status === 'cancelled' ? (
+              <button
+                type="button"
+                className="btn btn-ghost btn-new"
+                onClick={() => void onNewThread()}
+                data-testid="new-run-btn"
+              >
+                New request
+              </button>
+            ) : null}
+          </div>
         </footer>
       </div>
+
+      {inspectorOpen ? (
+        <RuntimeInspector
+          status={state.status}
+          items={state.timeline}
+          onClose={() => setInspectorOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

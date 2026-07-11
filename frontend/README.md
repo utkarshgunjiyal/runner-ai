@@ -1,9 +1,15 @@
-# Runner.ai — Web UI (Phase 41B)
+# Runner.ai — Web UI (Phase 45)
 
-A React + TypeScript + Vite single-page app for Runner.ai V2: conversational
-requests, **true token streaming**, a safe runtime activity timeline, and
-**human-in-the-loop** (clarification, approval/rejection, deferred waits) with
-checkpoint-based resume.
+A React + TypeScript + Vite single-page app for Runner.ai V2: a polished,
+three-region **AI workspace** (conversations rail · chat · runtime inspector)
+with conversational requests, **true token streaming**, a safe runtime activity
+inspector, and **human-in-the-loop** (clarification, approval/rejection, deferred
+waits) with checkpoint-based resume.
+
+No UI framework, router, or CSS library is used — just React 18 + a single
+design-token stylesheet (`src/styles.css`). The app is dark-first, responsive
+(desktop columns → tablet inspector sheet → mobile sidebar drawer), and
+accessible (semantic buttons, visible focus, `aria-*`, reduced-motion).
 
 The UI is a thin transport + presentation layer over the existing backend API.
 It contains **no business logic** — the runtime, planner, retrieval, evaluation,
@@ -79,11 +85,52 @@ src/
   hooks/
     useRuntimeStream.ts  # one abortable stream (aborts prior on new request / unmount)
     useAgentRun.ts       # orchestrates submit → stream, resolve → resume
+  lib/
+    format.ts       # pure display helpers: relative time + safe answer/source parsing
   components/
-    chat/     ChatShell · MessageList · Composer · StreamingMessage
-    runtime/  RuntimeTimeline · RuntimeEventCard · RuntimeOutcomeBadge · ToolExecutionCard
-    hitl/     ClarificationPanel · ApprovalPanel · WaitingContextPanel · FailedRunPanel
+    chat/         ChatShell (3-region layout) · MessageList · Composer · StreamingMessage
+    threads/      ThreadSidebar (branding, recent, skeleton/empty/error, integrations)
+    documents/    DocumentSelector (upload · multi-select · scope hints)
+    integrations/ IntegrationsPanel (truthful Gmail/GitHub/MCP status)
+    runtime/      RuntimeInspector · RuntimeTimeline · RuntimeEventCard · RuntimeOutcomeBadge · ToolExecutionCard
+    hitl/         ClarificationPanel · ApprovalPanel · DocumentPickerPanel · WaitingContextPanel · FailedRunPanel
+  styles.css      # design tokens (spacing/radii/surfaces/accent/status/shadows) + responsive layout
 ```
+
+### Workspace layout (Phase 45)
+Three regions inside `app-layout`:
+- **Left rail (`ThreadSidebar`)** — Runner.ai branding, **New conversation**, the
+  recent-conversation list (relative last-activity time + message count, loading
+  **skeleton**, empty state, and an **error + Retry**), and a truthful
+  **Integrations** section. Raw thread ids are never shown; an untitled thread
+  falls back to a friendly label (backend title is preferred when present — no
+  extra LLM call is made just for titles).
+- **Center (`ChatShell` main)** — a header with the active **thread title**, a
+  status indicator, and toggles; the message list; document **scope chips** above
+  a sticky **Composer** (Enter sends · Shift+Enter newlines · Stop while
+  streaming); HITL panels; and upload state.
+- **Right (`RuntimeInspector`)** — **collapsed by default**, opened from the
+  header. Shows the status summary, tool activity, and the safe runtime timeline —
+  **safe metadata only** (never chain-of-thought, prompts, secrets, or payloads).
+
+On tablets the inspector becomes an overlay **sheet**; on phones the sidebar
+becomes a **drawer** (hamburger toggle) and the composer stays sticky. A scrim
+closes either overlay.
+
+### Assistant answers & sources
+Comparison/QA answers preserve their paragraph and bullet structure (`white-space:
+pre-wrap`). When an answer carries a trailing **Sources** list (Phase 44.x), those
+are lifted into compact **source chips** (filename + page); bare evidence ids
+(`E1`, `E7`, …) are never rendered as sources. Answer text is safe structured text
+— no untrusted/dynamic HTML is injected.
+
+### Integrations (honest status)
+`IntegrationsPanel` is **static and truthful**: **GitHub** and **Gmail** show
+*Not connected — coming next* (no connect action that could imply a live OAuth
+session), and **MCP Runtime** shows *Available* (infrastructure ready; external
+MCP servers can be registered when configured). No frontend connector API exists
+yet, so the panel makes **no live calls** and never claims a connection, account
+access, or send capability.
 
 ### Streaming
 `POST /agent/run/stream` returns `text/event-stream`. `sseClient` reads the

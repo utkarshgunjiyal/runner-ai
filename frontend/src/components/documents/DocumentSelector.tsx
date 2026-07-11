@@ -51,10 +51,18 @@ export function DocumentSelector({
     upload.selectFile(file);
   };
 
+  const selectedCount = selectedIds.length;
   return (
     <div className="doc-selector" data-testid="doc-selector">
       <div className="doc-selector-head">
-        <span className="doc-selector-title">Documents</span>
+        <span className="doc-selector-title">
+          Documents
+          {documents.length > 0 ? (
+            <span className="doc-count" data-testid="doc-count">
+              {selectedCount > 0 ? `${selectedCount}/${documents.length} selected` : documents.length}
+            </span>
+          ) : null}
+        </span>
         <label className="doc-upload">
           <input
             ref={inputRef}
@@ -64,7 +72,7 @@ export function DocumentSelector({
             disabled={disabled || upload.busy}
             data-testid="doc-upload-input"
           />
-          {upload.busy ? 'Uploading…' : 'Upload'}
+          <span aria-hidden>⬆</span> {upload.busy ? 'Uploading…' : 'Upload'}
         </label>
       </div>
       {upload.filename ? (
@@ -86,26 +94,39 @@ export function DocumentSelector({
         </div>
       ) : null}
       {documents.length === 0 ? (
-        <p className="doc-empty">No documents in this conversation.</p>
+        <p className="doc-empty">No documents yet — upload a PDF to ground answers in it.</p>
       ) : (
-        <div className="doc-list">
-          {documents.map((doc) => {
-            const ready = doc.status === 'completed';
-            return (
-              <label key={doc.document_id} className="doc-chip" data-testid="doc-chip">
-                <input
-                  type="checkbox"
-                  checked={selectedIds.includes(doc.document_id)}
-                  onChange={() => onToggle(doc.document_id)}
-                  disabled={!ready}
-                  data-testid={`doc-checkbox-${doc.document_id}`}
-                />
-                <span className="doc-name">{doc.filename}</span>
-                {!ready ? <span className="doc-status">{doc.status}</span> : null}
-              </label>
-            );
-          })}
-        </div>
+        <>
+          <div className="doc-list">
+            {documents.map((doc) => {
+              const ready = doc.status === 'completed';
+              const selected = selectedIds.includes(doc.document_id);
+              return (
+                <label
+                  key={doc.document_id}
+                  className={`doc-chip${selected ? ' selected' : ''}`}
+                  data-testid="doc-chip"
+                  title={ready ? doc.filename : `${doc.filename} — ${doc.status}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={() => onToggle(doc.document_id)}
+                    disabled={!ready}
+                    data-testid={`doc-checkbox-${doc.document_id}`}
+                  />
+                  <span className="doc-name">{doc.filename}</span>
+                  {!ready ? <span className="doc-status">{doc.status}</span> : null}
+                </label>
+              );
+            })}
+          </div>
+          <p className="doc-hint" data-testid="doc-hint">
+            {selectedCount > 0
+              ? 'Retrieval is restricted to the selected files.'
+              : 'No selection — Runner.ai searches all documents in this conversation.'}
+          </p>
+        </>
       )}
     </div>
   );

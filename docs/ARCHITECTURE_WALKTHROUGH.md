@@ -157,13 +157,29 @@ transport-agnostic. *Why:* extend capabilities without embedding a vendor SDK in
 the runtime. *Trade-off:* transport/lifecycle code, isolated behind a Protocol so
 the runtime never sees it.
 
-### 13. Frontend state machine
+### 13. Frontend state machine + workspace (Phase 45)
 The SPA is a thin transport + presentation layer: a pure reducer maps
 `RuntimeEvent`s to an explicit run state (`idle → streaming →
 waiting/completed/failed`). It renders only **safe** metadata and drives
 `/agent/resume`. *Why:* no business logic in React — the runtime owns behavior.
 *Trade-off:* the UI can only show what the backend curates (by design — internals
 never leak).
+
+Phase 45 wraps that machine in a professional three-region **AI workspace**:
+a conversations rail (`ThreadSidebar` — branding, recent list with relative time,
+skeleton/empty/error+retry, truthful **Integrations** status), a center chat
+(thread-title header, document **scope chips**, sticky composer, HITL panels), and
+a right **RuntimeInspector** that is **collapsed by default** and holds all runtime
+transparency out of the conversation. It is responsive (columns → inspector sheet →
+sidebar drawer) and accessible (semantic controls, focus-visible, `aria-*`,
+reduced-motion). Answers preserve structure and lift a trailing `Sources` list into
+**source chips** (filename + page, never `E#`). *Why:* the product reads as a real
+workspace, not a developer console, without adding a UI framework, router, or any
+new dependency. *Trade-off:* styling is one hand-maintained token stylesheet rather
+than a component library — deliberate, to keep the bundle and surface area small.
+Integrations are **static and truthful** (Gmail/GitHub *not connected — coming
+next*; MCP *available*) because no per-user OAuth exists yet — the UI never fakes a
+live connector.
 
 ### 14. Observability, rate limiting, security
 Injectable `MetricsSink` (NoOp default; in-memory or isolated Prometheus) with a

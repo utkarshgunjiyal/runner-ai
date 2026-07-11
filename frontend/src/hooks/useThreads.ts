@@ -18,6 +18,10 @@ export interface ThreadsApi {
   activeThreadId: string | null;
   messages: ThreadMessage[];
   documents: ThreadDocument[];
+  /** True while the initial thread list is loading (drives the sidebar skeleton). */
+  loading: boolean;
+  /** True when the last list load failed (drives the sidebar error + retry). */
+  error: boolean;
   refreshThreads: () => Promise<void>;
   createThread: (title?: string) => Promise<ThreadSummary>;
   selectThread: (id: string | null) => Promise<void>;
@@ -30,17 +34,25 @@ export function useThreads(baseUrl = ''): ThreadsApi {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [documents, setDocuments] = useState<ThreadDocument[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   // Guards against out-of-order thread loads overwriting the active thread.
   const selectSeq = useRef(0);
 
   const refreshThreads = useCallback(async () => {
     // Degrade gracefully when the backend is unreachable (empty sidebar) rather
-    // than throwing an unhandled rejection on mount.
+    // than throwing an unhandled rejection on mount, but surface a load error so
+    // the sidebar can offer a retry instead of an ambiguous empty list.
+    setLoading(true);
     try {
       const list = await listThreads(baseUrl);
       setThreads(list);
+      setError(false);
     } catch {
       setThreads([]);
+      setError(true);
+    } finally {
+      setLoading(false);
     }
   }, [baseUrl]);
 
@@ -105,6 +117,8 @@ export function useThreads(baseUrl = ''): ThreadsApi {
     activeThreadId,
     messages,
     documents,
+    loading,
+    error,
     refreshThreads,
     createThread,
     selectThread,

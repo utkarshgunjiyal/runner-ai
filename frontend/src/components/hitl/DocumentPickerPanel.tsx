@@ -30,6 +30,9 @@ export function DocumentPickerPanel({
   return (
     <div className="hitl doc-picker" data-testid="document-picker-panel">
       <h3 className="hitl-title">Which document should the agent use?</h3>
+      <p className="hitl-reason">
+        This request could match more than one document. Choose one or more to continue.
+      </p>
       <ul className="doc-picker-list">
         {candidates.map((candidate) => (
           <li key={candidate.document_id}>
@@ -57,6 +60,9 @@ export function DocumentPickerPanel({
         >
           {resuming ? 'Continuing…' : 'Confirm'}
         </button>
+        <span className="hitl-selected-count" data-testid="doc-picker-count">
+          {selected.length} selected
+        </span>
       </div>
     </div>
   );

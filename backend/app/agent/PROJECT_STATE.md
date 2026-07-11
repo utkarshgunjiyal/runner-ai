@@ -75,8 +75,8 @@ config-free and unit-testable without a database or credentials.
 | Field | Value |
 |---|---|
 | **Branch** | `v2-autonomous-platform` |
-| **Latest commit** | `V2 Phase 44.2: Evidence Compression & Comparison Synthesis` |
-| **Test count** | **814 backend** + **63 frontend** (Vitest) |
+| **Latest commit** | `V2 Phase 45: Final Frontend Polish & Demo UX` |
+| **Test count** | **814 backend** + **89 frontend** (Vitest) |
 | **Python** | 3.11 (developed on 3.11.15) |
 | **Test command** | `cd backend && python -m pytest` |
 
@@ -619,6 +619,42 @@ config-free, no LLM/clock/network.
   (single-doc / chat / QA answers are byte-identical). Nothing is invented — every
   rendered skill is matched from the retrieved evidence.
 
+### Phase 45 — Final Frontend Polish & Demo UX
+A frontend-only phase that turns the functional SPA into a polished, interview-ready
+**AI workspace**. **No backend change** — the runtime, planner, retrieval, document
+ownership, checkpoint/resume, and connector internals are untouched; the only
+backend-adjacent fact used is that **no frontend connector API exists**, so the
+integrations surface is static and truthful. No new dependency, UI framework, or
+router; styling is one design-token stylesheet.
+- **Three-region layout.** `ChatShell` renders a conversations rail
+  (`ThreadSidebar`), the center chat, and a right `RuntimeInspector` (**collapsed by
+  default**, opened from the header — runtime transparency lives here, out of the
+  conversation). Responsive: desktop columns → tablet inspector **sheet** → mobile
+  sidebar **drawer** (hamburger + scrim); the composer stays sticky. Verified
+  overflow-free at 1440 / 834 / 390 px.
+- **Design system.** `styles.css` rewritten around tokens (spacing, radii,
+  surfaces, borders, accent, status, shadows, type). Distinct user/assistant
+  messages, polished buttons/inputs, focus-visible rings, and
+  `prefers-reduced-motion` support.
+- **Sidebar.** Branding, **New conversation**, recent list with **relative
+  last-activity time** + message count, a loading **skeleton**, empty state, and an
+  **error + Retry** (`useThreads` extended additively with `loading`/`error`; the
+  thread-isolation guards are unchanged). Never shows raw thread ids; an untitled
+  thread falls back to a friendly label (backend title preferred; **no LLM call for
+  titles**).
+- **Composer + scope.** Sticky auto-grow textarea, Enter/Shift+Enter, Stop while
+  streaming, a synchronous in-flight guard, and document **scope chips** (all-docs /
+  selected-with-remove / no-docs states).
+- **Answers & sources.** `StreamingMessage` lifts a trailing `Sources` block into
+  compact **source chips** (filename + page); bare `E#` ids never render. Answer
+  text stays safe structured text (no dynamic HTML injected).
+- **Integrations (truthful).** New static `IntegrationsPanel`: GitHub/Gmail *Not
+  connected — coming next* (no connect action), MCP Runtime *Available*. Makes no
+  live calls and never claims a connection, account access, or send capability.
+- **Tests.** +26 frontend (89 total) across `format`, `integrations`,
+  `threadSidebar`, `composer`, `sourceChips`, `chatShellLayout`; every prior
+  behavioral test kept and green. Backend unchanged (814).
+
 ---
 
 ## Runtime Pipeline
@@ -1057,6 +1093,7 @@ reason — most of the codebase relies on them.
 | **Phase 44 ✅** | **Stabilization, Retrieval Quality & UX Reliability** | *Done.* Correctness/reliability hardening (no new architecture). Hardened ambiguity policy (auto-resolve only on single-doc / explicit UI selection / prior-turn single doc; weak "last uploaded/indexed/newest" signals never silently resolve); comparison-aware **per-document balanced retrieval** (`PER_DOCUMENT_CHUNK_QUOTA`/`FINAL_CHUNK_BUDGET`, round-robin + de-dup); source-aware final context (`[DOCUMENT] [PAGE]` labels, per-doc sections + Similarities/Differences, no cross-doc merging); deterministic **BM25 lexical reranker** over chunk text; intent **capability gate** (`get_page_summary` → explicit page refs; `save_user_preference` → explicit save language only); instant persistent "New conversation" thread; upload polling/inline-error UX + collapsed runtime activity; safe `document_storage_unavailable` (503); Caddy `/threads` matcher + env-driven MinIO creds. Phase 43 pause/resume contract unchanged; embeddings still the hash stub. |
 | **Phase 44.1 ✅** | **Source-Aware Comparison Output** | *Done.* Fixes the demo's blended two-document comparison. The comparison intent (interpretation + resolved `documents`) is carried on `FinalPrompt.metadata` (`is_comparison`, `comparison_documents`) into synthesis; the **deterministic fallback provider** now groups evidence per document and emits a source-separated answer — `Document N — filename` sections + `Similarities` + `Differences` + `Sources`, with filename+page citations, covering every selected document (empty ones stated explicitly) and never blending across documents. Non-comparison path byte-identical; no new planner/interpreter; frontend already renders multi-line answers. |
 | **Phase 44.2 ✅** | **Evidence Compression & Comparison Synthesis** | *Done.* Improves only the deterministic/offline fallback comparison. New pure `comparison_synthesis.py`: a maintainable category→keyword taxonomy compresses retrieved chunks into concise, category-grouped technical skills (whole-token matching, normalized wrapped lines, de-duplicated), excludes contact/education/extracurricular/leadership noise, computes **concept-based** similarities/differences (not token lists), and cites **filename+page only** (no opaque `E#`). Output is bounded (no raw chunk dumps). Provider precedence, real-LLM path, retrieval, planner, checkpoint/resume, and frontend unchanged; non-comparison output byte-identical; streaming==non-streaming. |
+| **Phase 45 ✅** | **Final Frontend Polish & Demo UX** | *Done.* Frontend-only. Three-region **AI workspace** (conversations rail · chat · collapsed-by-default `RuntimeInspector`), design-token stylesheet, responsive (desktop columns → tablet inspector sheet → mobile sidebar drawer, overflow-free at 1440/834/390 px), a11y (focus-visible, `aria-*`, reduced-motion). Sidebar skeleton/empty/error+retry + relative time (`useThreads` additive `loading`/`error`); composer scope chips + Enter/Shift+Enter/Stop; answers lift `Sources` into filename+page **chips** (no `E#`); static **truthful** Integrations (Gmail/GitHub *coming next*, MCP *available* — no fake OAuth). No backend/planner/retrieval/ownership/checkpoint change; no new dependency. +26 frontend tests (89). |
 
 **Phase 41A current limitations (intentional scope boundary).** Real transports
 ship, but no MCP dependency/live server is required: `agent_mcp_enabled` defaults
@@ -1134,6 +1171,17 @@ provider (`AGENT_USE_REAL_LLM=true`) produces richer, fully prose comparisons fr
 the *same* comparison-marked prompt. Extraction depends on evidence carrying
 `filename`/`page` provenance. No live/paid API is called by the fallback or tests.
 
+**Phase 45 current limitations (intentional scope boundary).** Frontend polish
+only — no backend behavior changed. The **Integrations** panel is **static and
+truthful**: real per-user **Gmail/GitHub OAuth is not implemented**, so those show
+*Not connected — coming next* with no connect action, and **MCP Runtime** shows
+*Available* (infrastructure ready, not a live external server). No frontend
+connector metadata API exists yet, so the panel makes no live calls. Thread titles
+use the backend title or a first-message/friendly fallback — **no LLM call is added
+for titles**. Styling is one hand-maintained token stylesheet (no component
+library, by choice). The dev-user auth stub is unchanged (documented in
+`SECURITY.md`).
+
 ---
 
 ## Test Status
@@ -1157,10 +1205,12 @@ the *same* comparison-marked prompt. Extraction depends on evidence carrying
   - `tests/ops/` — observability, rate limit, middleware, health, SSE.
   - `tests/deploy/` — env validation + production startup guard (config-free, no
     secret values in output).
-- **Frontend:** **63 passing** (Vitest + jsdom, mocked fetch/streams; incl. threads
-  client, useThreads switching, document picker/selector, thread-switch reset, and
-  the Phase-44 upload flow / polling), `cd frontend && npm test`. Also
-  `npm run typecheck`, `npm run lint`, `npm run build` all green.
+- **Frontend:** **89 passing** (Vitest + jsdom, mocked fetch/streams; incl. threads
+  client, useThreads switching, document picker/selector, thread-switch reset, the
+  Phase-44 upload flow / polling, and the Phase-45 workspace: `format`,
+  `integrations`, `threadSidebar`, `composer`, `sourceChips`, `chatShellLayout`),
+  `cd frontend && npm test`. Also `npm run typecheck`, `npm run lint`,
+  `npm run build` all green.
 
 ### Major test categories
 - **Models & registries:** `test_tool_registry`, `test_plan_models`,
