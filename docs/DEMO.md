@@ -104,11 +104,16 @@ show it end-to-end:
    **same run** — the backend revalidates the id against the owned set and continues
    retrieval over the chosen document.
 6. **Comparison (source-separated answer).** Select two documents (or ask to
-   compare them) and ask e.g. `Compare these two resumes`. Retrieval is balanced
-   **per document** so neither dominates, and the answer comes back
-   **source-separated** — a labelled section per document (`[DOCUMENT: filename]`),
-   explicit Similarities/Differences, and citations that name the file and page
-   (`resume.pdf p.1`). Facts are never merged across the two files.
+   compare them) and ask e.g. `Compare the technical skills in these two documents`.
+   Retrieval is balanced **per document** so neither dominates, and the answer comes
+   back **source-separated** — a `Document N — filename` section per document, then
+   explicit **Similarities** and **Differences**, then **Sources**, with citations
+   that name the file and page (`resume.pdf p.1`). Facts are never merged across the
+   two files, and a selected document with no matching evidence is stated explicitly
+   ("No relevant evidence was found in {filename}.") rather than dropped. This holds
+   even in the default **demo** mode (`AGENT_USE_REAL_LLM=false`): the deterministic
+   fallback provider synthesizes the same structure from the grouped evidence, so the
+   comparison is never a single blended paragraph (Phase 44.1).
 
 Filenames are only for matching/display; retrieval always uses the stable
 `document_id`. Client-sent `selected_document_ids` are hints, revalidated

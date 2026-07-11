@@ -208,9 +208,18 @@ class ScopeGate:
                 )
                 evidence_count += 1
 
+        # Resolved documents (id + filename), in the resolved order — so the final
+        # synthesis layer covers EVERY selected document, including ones that
+        # produced no evidence (Phase 44.1 balanced comparison).
+        by_id = {str(d.get("document_id") or d.get("_id")): d for d in thread_documents}
+        resolved_documents = [
+            {"document_id": doc_id, "filename": str((by_id.get(doc_id) or {}).get("filename", "document"))}
+            for doc_id in resolved_ids
+        ]
         meta["document_scope"] = {
             "status": resolution.status.value,
             "resolved_document_ids": resolved_ids,
+            "documents": resolved_documents,
             "resolution_source": resolution.resolution_source,
             "evidence_count": evidence_count,
         }

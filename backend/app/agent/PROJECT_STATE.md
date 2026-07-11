@@ -75,8 +75,8 @@ config-free and unit-testable without a database or credentials.
 | Field | Value |
 |---|---|
 | **Branch** | `v2-autonomous-platform` |
-| **Latest commit** | `V2 Phase 44: Stabilization, Retrieval Quality & UX Reliability` |
-| **Test count** | **793 backend** + **63 frontend** (Vitest) |
+| **Latest commit** | `V2 Phase 44.1: Source-Aware Comparison Output` |
+| **Test count** | **798 backend** + **63 frontend** (Vitest) |
 | **Python** | 3.11 (developed on 3.11.15) |
 | **Test command** | `cd backend && python -m pytest` |
 
@@ -549,6 +549,38 @@ triggers and improves the quality of the answer once documents are resolved. Doc
   `${MINIO_SECRET_KEY:-minioadmin}` / `${MINIO_BUCKET:-runner-uploads}` /
   `${MINIO_SECURE:-false}` (not hardcoded).
 
+### Phase 44.1 — Source-Aware Comparison Output
+A narrow fix for a reproducible demo defect: selecting two documents and asking
+"Compare the technical skills in these two documents" produced a **blended**
+answer ("Based on the available context…") with opaque `E#` citations and one
+document dominating. Phase 44 made the *real-LLM* prompt comparison-aware, but the
+demo runs the **deterministic fallback** provider (`AGENT_USE_REAL_LLM=false`),
+which ignored those instructions. No new architecture, no second planner/
+interpreter — the comparison intent already computed by the scope gate is now
+carried through to synthesis.
+- **Intent preserved into synthesis.** `FinalContextBuilder.build()` reads the
+  already-computed interpretation + `document_scope` and stamps the `FinalPrompt`
+  metadata with `intents`, `is_comparison`, and `comparison_documents`
+  (`{document_id, filename}` in resolved order). `is_comparison` is true when the
+  interpretation carries `document_comparison`, or ≥2 documents were resolved, or
+  evidence spans ≥2 filenames — never re-inferred from raw text.
+- **Resolved documents carried from the scope gate.** `ScopeGate` now stores the
+  resolved `documents` (id + filename, in order) on `document_scope`, so synthesis
+  covers **every** selected document — including one that produced no evidence.
+- **Deterministic comparison synthesis.** `DeterministicFinalProvider` groups
+  evidence by document (`_group_evidence_by_document`) and, when `is_comparison`,
+  emits a source-separated answer: a labelled `Document N — filename` section per
+  document, then `Similarities` and `Differences` (a deterministic lexical
+  shared-vs-unique term comparison), then `Sources` — with **filename + page**
+  citations (`resumeresume.pdf p.1`), never a bare `E#`, and no cross-document
+  blending. A selected document with no evidence renders "No relevant evidence was
+  found in {filename}." Streaming and non-streaming stay byte-identical.
+- **Non-comparison path unchanged.** Single-document / non-document answers use the
+  exact prior composition (byte-identical); only the comparison branch is new.
+- **Frontend.** No change required — the assistant answer already renders under
+  `white-space: pre-wrap` (`.msg p`), so the multi-line comparison displays with
+  its sections intact.
+
 ---
 
 ## Runtime Pipeline
@@ -985,6 +1017,7 @@ reason — most of the codebase relies on them.
 | **Phase 42B ✅** | **Deployment, Demo & Interview Readiness** | *Done.* Single-VM topology (Caddy+HTTPS, internal infra, resource limits, log rotation) + demo override; production auth **startup guard** (no silent `dev_user`); off-by-default **demo mode** (genuine checkpoint/resume via the existing evaluator seam); env validation; deploy/update/rollback/backup/restore/smoke scripts; shellcheck + compose + proxy CI + guarded manual deploy; interview/architecture/positioning/video docs. Locked runtime untouched. |
 | **Phase 43 ✅** | **Thread/Document/Context/Connector Integration** | *Done.* Deterministic pre-planning scope layer: interpreter (intent vs scope), ownership-validated document resolver, early **Scope Gate** (ambiguous/unauthorized doc ref → `WAITING_FOR_USER` + safe candidates + checkpoint, resumes the same run), connectors + capability **eligibility** (existence/health/scopes; MCP-server-vs-connector distinction), `RunRecorder`, thread/document routes on `get_current_user`, Qdrant `search_scoped` (user + validated document-id set + pages/thread). `selected_document_ids` are revalidated hints. **Boundary only** — no real OAuth/token refresh/secret storage; in-memory connector registry; legacy V1.5 routes keep the dev-user stub. |
 | **Phase 44 ✅** | **Stabilization, Retrieval Quality & UX Reliability** | *Done.* Correctness/reliability hardening (no new architecture). Hardened ambiguity policy (auto-resolve only on single-doc / explicit UI selection / prior-turn single doc; weak "last uploaded/indexed/newest" signals never silently resolve); comparison-aware **per-document balanced retrieval** (`PER_DOCUMENT_CHUNK_QUOTA`/`FINAL_CHUNK_BUDGET`, round-robin + de-dup); source-aware final context (`[DOCUMENT] [PAGE]` labels, per-doc sections + Similarities/Differences, no cross-doc merging); deterministic **BM25 lexical reranker** over chunk text; intent **capability gate** (`get_page_summary` → explicit page refs; `save_user_preference` → explicit save language only); instant persistent "New conversation" thread; upload polling/inline-error UX + collapsed runtime activity; safe `document_storage_unavailable` (503); Caddy `/threads` matcher + env-driven MinIO creds. Phase 43 pause/resume contract unchanged; embeddings still the hash stub. |
+| **Phase 44.1 ✅** | **Source-Aware Comparison Output** | *Done.* Fixes the demo's blended two-document comparison. The comparison intent (interpretation + resolved `documents`) is carried on `FinalPrompt.metadata` (`is_comparison`, `comparison_documents`) into synthesis; the **deterministic fallback provider** now groups evidence per document and emits a source-separated answer — `Document N — filename` sections + `Similarities` + `Differences` + `Sources`, with filename+page citations, covering every selected document (empty ones stated explicitly) and never blending across documents. Non-comparison path byte-identical; no new planner/interpreter; frontend already renders multi-line answers. |
 
 **Phase 41A current limitations (intentional scope boundary).** Real transports
 ship, but no MCP dependency/live server is required: `agent_mcp_enabled` defaults
@@ -1046,15 +1079,26 @@ credentials referenced opaquely). **MCP stays off by default.** The legacy V1.5
 non-agent routes keep the **dev-user stub**. The per-document quota and final chunk
 budget are fixed constants (configurable, not adaptive).
 
+**Phase 44.1 current limitations (intentional scope boundary).** The deterministic
+provider's `Similarities`/`Differences` are a **lexical** shared-vs-unique term
+comparison, not semantic reasoning — it is the offline/demo fallback; the real-LLM
+provider produces richer prose from the *same* comparison-marked prompt. Comparison
+detection and grouping rely on evidence carrying `filename`/`page` provenance (the
+scope gate attaches it); evidence without document provenance falls back to bare
+`[E#]` labels. No new planner or interpreter is introduced — the intent is reused,
+not recomputed.
+
 ---
 
 ## Test Status
 
-- **Backend:** **793 passing** (1 benign Starlette deprecation warning),
+- **Backend:** **798 passing** (1 benign Starlette deprecation warning),
   `cd backend && python -m pytest`, ~2–3s. Phase 44 adds coverage for the hardened
   ambiguity policy, per-document balanced retrieval, source-aware final context,
   the BM25 lexical reranker, the intent capability gate, and the safe
-  `document_storage_unavailable` error.
+  `document_storage_unavailable` error; Phase 44.1 adds `test_comparison_output.py`
+  (builder comparison flag, deterministic source-separated synthesis, shared/unique
+  term separation, empty-document coverage, and the reported demo input end-to-end).
   - `tests/agent/` — unit tests for every runtime stage, incl. the DemoEvaluator
     and the Phase-43/44 interpreter/resolver/scope-gate/connectors/document-
     retrieval/thread-document e2e (config-free, fakes + `asyncio.run`).

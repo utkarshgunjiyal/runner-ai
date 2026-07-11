@@ -243,6 +243,35 @@ Once chunks are retrieved, the evidence handed to the answer provider is
   not attribute one résumé's skills to another person), which keeps comparisons
   honest rather than blending two files into one imagined profile.
 
+## Source-aware comparison output (Phase 44.1)
+
+Phase 44 made the *real-LLM* prompt comparison-aware, but the demo and offline
+runs use the **deterministic fallback** provider (`AGENT_USE_REAL_LLM=false`),
+which previously ignored those instructions and emitted one blended paragraph with
+opaque `E#` citations. Phase 44.1 closes that gap **without** adding a second
+planner or interpreter — the comparison intent already decided upstream is carried
+through to synthesis:
+
+- **Intent carried, not re-inferred.** `FinalContextBuilder.build()` reads the
+  existing interpretation and `document_scope` and stamps the `FinalPrompt`
+  metadata with `intents`, `is_comparison`, and `comparison_documents`
+  (`{document_id, filename}` in resolved order). `is_comparison` is true when the
+  interpretation carries `document_comparison`, **or** ≥2 documents were resolved,
+  **or** evidence spans ≥2 filenames.
+- **Every selected document represented.** The scope gate records the resolved
+  `documents` on `document_scope`, so synthesis covers each selected document even
+  when one produced no evidence — it renders "No relevant evidence was found in
+  {filename}." rather than silently dropping it.
+- **Deterministic structured synthesis.** The fallback provider groups evidence per
+  document and emits: a `Document N — filename` section per document (with its
+  evidence and `filename p.N` citations), then `Similarities` and `Differences` (a
+  deterministic lexical shared-vs-document-unique term comparison), then `Sources`
+  (filename + page). No fact is merged across documents; streaming and
+  non-streaming output stay byte-identical.
+
+The real-LLM provider produces richer prose from the same comparison-marked prompt;
+the deterministic path guarantees the *structure* even offline.
+
 ---
 
 ## Thread switching semantics
