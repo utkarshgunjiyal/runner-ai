@@ -60,7 +60,13 @@ async def main() -> int:
         # the same account scoping. Never prints the token or any header.
         from app.agent.github import (
             GithubArgumentBuilder,
+            GithubResourceResolver,
             resolve_github_identity,
+        )
+        from app.agent.resources import (
+            ArgumentBuilderRegistry,
+            ResourceAwareArgumentBuilder,
+            ResourceResolverRegistry,
         )
         from app.agent.runtime.context import RunContext
 
@@ -70,8 +76,13 @@ async def main() -> int:
         identity = await resolve_github_identity(
             configured_owner=os.environ.get("GITHUB_MCP_OWNER"), get_me_fn=_get_me
         )
+        resolvers = ResourceResolverRegistry()
+        resolvers.register(GithubResourceResolver(identity=identity))
+        builders = ArgumentBuilderRegistry()
+        builders.register(GithubArgumentBuilder())
+        pipeline = ResourceAwareArgumentBuilder(resolvers, builders)
         repo_spec = manager.tool_registry.get(f"mcp.{GITHUB_MCP_SERVER_ID}.search_repositories")
-        built = GithubArgumentBuilder(identity=identity).build(
+        built = pipeline.build(
             repo_spec, RunContext.create("List all my GitHub repositories.", user_id="probe"),
             {"query": "List all my GitHub repositories."},
         )

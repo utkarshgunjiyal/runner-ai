@@ -180,6 +180,25 @@ def mcp_tool_invoked(run_context, tool, args, *, timeout=None, retry_attempt: in
          argument_keys=sorted(str(k) for k in (args or {}).keys()))
 
 
+def resource_resolution_started(run_context, tool, *, provider: str | None) -> None:
+    b = binding_view(tool)
+    emit(run_context, "agent.resource_resolution_started",
+         capability_id=b["capability_id"], provider=provider, mcp_tool_name=b["mcp_tool_name"])
+
+
+def resource_resolved(run_context, tool, resolved) -> None:
+    """Safe view of resolution: resource TYPES + their deterministic SOURCE +
+    ambiguity counts only — never resolved values (Phase 46.3.1)."""
+    b = binding_view(tool)
+    emit(run_context, "agent.resource_resolved",
+         capability_id=b["capability_id"],
+         provider=getattr(resolved, "provider", None),
+         resolved_types=getattr(resolved, "resolved_types", lambda: [])(),
+         resource_sources=getattr(resolved, "source_map", lambda: {})(),
+         flags=dict(getattr(resolved, "flags", {}) or {}),
+         ambiguous=dict(getattr(resolved, "ambiguous", {}) or {}))
+
+
 def _argument_view(tool, result) -> dict:
     """Safe view of an argument-build result: KEY NAMES + provenance only, never
     argument values (Phase 46.2.6)."""

@@ -194,9 +194,15 @@ credentials or bypassing MCP. *Trade-off:* deployment-scoped shared identity, no
 per-user OAuth (restrict access; see [SECURITY.md](./SECURITY.md) and
 [GITHUB_MCP.md](./GITHUB_MCP.md)).
 
-Tool **selection** and argument **resolution** are separate steps (Phase 46.2.6).
-After a GitHub tool is selected, a deterministic argument layer
-(`github/resources.py` + `github/arguments.py`) translates the natural-language
+Tool **selection**, resource **resolution**, and argument **construction** are
+separate steps (Phase 46.2.6; generalized into a reusable, provider-agnostic layer
+in Phase 46.3.1 — `app/agent/resources/`, with a `ResourceResolver` /
+`ProviderArgumentBuilder` pair per provider, registries keyed by MCP `server_id`,
+and a `ResourceAwareArgumentBuilder` pipeline injected as DirectRuntime's
+`argument_builder` seam; GitHub is one implementation, Gmail/Slack/Jira plug into the
+same framework, and any tool with no registered provider passes through untouched).
+After a GitHub tool is selected, the GitHub resolver + argument builder
+(`github/resolver.py` → `github/arguments.py`) translate the natural-language
 request into schema-valid, provider-correct arguments *before* execution: an
 account listing becomes `{"query": "user:<login>"}` (or `user:@me`) rather than the
 raw sentence (which `search_repositories` would run as a global search); repo tools

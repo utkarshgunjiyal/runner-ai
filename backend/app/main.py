@@ -190,7 +190,13 @@ async def lifespan(app: FastAPI):
         from app.agent.github import (
             GITHUB_MCP_SERVER_ID,
             GithubArgumentBuilder,
+            GithubResourceResolver,
             resolve_github_identity,
+        )
+        from app.agent.resources import (
+            ArgumentBuilderRegistry,
+            ResourceAwareArgumentBuilder,
+            ResourceResolverRegistry,
         )
 
         get_me_fn = None
@@ -206,7 +212,14 @@ async def lifespan(app: FastAPI):
         github_identity = await resolve_github_identity(
             configured_owner=settings.github_mcp_owner, get_me_fn=get_me_fn
         )
-        capability_argument_builder = GithubArgumentBuilder(identity=github_identity).build
+        # Provider-agnostic resource-resolution layer (Phase 46.3.1): register the
+        # GitHub resolver + argument builder; the pipeline resolves resources, then
+        # shapes them onto each tool's schema. Non-GitHub capabilities pass through.
+        resolvers = ResourceResolverRegistry()
+        resolvers.register(GithubResourceResolver(identity=github_identity))
+        builders = ArgumentBuilderRegistry()
+        builders.register(GithubArgumentBuilder())
+        capability_argument_builder = ResourceAwareArgumentBuilder(resolvers, builders).build
         logger.info("app.github_identity_ready", extra={"identity": github_identity.public_view()})
 
     # Agent LLM providers (Phase 37). Composition root selects deterministic vs

@@ -151,11 +151,23 @@ account listing.
   validated deployment setting **`GITHUB_MCP_OWNER`** — never inferred from
   conversation text. It is a **public handle**, never a token; it stays
   **deployment-scoped** (see [SECURITY.md](./SECURITY.md)), not per-user OAuth.
-- **Provider-specific resolution.** `github/resources.py` deterministically parses
-  explicit `owner/repo`, a bare repository name (owner resolved from the trusted
-  identity or unambiguous prior context), the pronoun "my", and issue/PR numbers
-  (positive integers only). Explicit `owner/repo` always beats inferred context;
-  an owner or repository is **never guessed**.
+- **Provider-agnostic layer (Phase 46.3.1).** Resolution is a **reusable
+  framework**, not GitHub-specific code. `app/agent/resources/` defines the
+  provider-neutral `Resource`/`ResolvedResources`/`ResourceSource`/
+  `ResolutionContext` model, the `ResourceResolver` + `ProviderArgumentBuilder`
+  protocols, their registries (keyed by MCP `server_id` via `provider_of`), and the
+  `ResourceAwareArgumentBuilder` pipeline that runs `resolve → build`. GitHub is one
+  implementation (`GithubResourceResolver` + `GithubArgumentBuilder`); Gmail, Slack,
+  Jira, etc. plug into the same registries. Any tool with no registered provider
+  passes through untouched.
+- **Provider-specific resolution.** `GithubResourceResolver` (reusing
+  `github/resources.py`) deterministically resolves explicit `owner/repo`, a bare
+  repository name (owner resolved from the trusted identity or unambiguous prior
+  context), the pronoun "my", and issue/PR numbers (positive integers only), tagging
+  each with its deterministic **source** (request / prior output / thread state /
+  connector identity / cached context / clarification). Explicit `owner/repo` always
+  beats inferred context; an owner or repository is **never guessed**. The argument
+  builder **consumes the already-resolved resources** and never re-parses them.
 - **Deterministic-first argument building.** `github/arguments.py`
   (`GithubArgumentBuilder`) maps the operation off the discovered tool name and
   fills only fields the discovered `input_schema` declares (tolerating

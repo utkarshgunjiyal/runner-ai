@@ -16,7 +16,14 @@ from app.agent.github.identity import (
     resolve_github_identity,
     validate_owner,
 )
+from app.agent.github.resolver import GithubResourceResolver
 from app.agent.github.resources import resolve_resources
+from app.agent.resources import (
+    ArgumentBuilderRegistry,
+    ResourceAwareArgumentBuilder,
+    ResourceResolverRegistry,
+)
+from app.agent.resources.models import ResourceSource
 from app.agent.mcp.models import MCPServerConfig, MCPToolCallResult, MCPToolDefinition, MCPTransport
 from app.agent.mcp.registry import convert_tool_definition
 from app.agent.models.tool_spec import RiskLevel, SideEffectType, ToolKind, ToolSpec
@@ -64,11 +71,21 @@ def rc(text: str, meta: dict | None = None) -> RunContext:
 IDENT = GithubIdentity(owner="octocat", source="deployment_setting")
 
 
+def pipeline(identity=IDENT):
+    """The production layering: GitHub resolver + argument builder via the pipeline."""
+    resolvers = ResourceResolverRegistry()
+    resolvers.register(GithubResourceResolver(identity=identity))
+    builders = ArgumentBuilderRegistry()
+    builders.register(GithubArgumentBuilder())
+    return ResourceAwareArgumentBuilder(resolvers, builders)
+
+
 def build(tool_name, text, *, identity=IDENT, meta=None, planner=None):
-    b = GithubArgumentBuilder(identity=identity).build
     default = {"query": text, "user_id": "u", "thread_id": "t1"}
-    context = rc(text, {**(meta or {}), **({"capability_args": planner} if planner else {})})
-    return b(spec(tool_name), context, default)
+    m = dict(meta or {})
+    if planner:
+        m["capability_args"] = planner
+    return pipeline(identity).build(spec(tool_name), rc(text, m), default)
 
 
 # --------------------------------------------------------------------------- #
@@ -178,7 +195,8 @@ def test_missing_repository_context_is_clarification():
 
 def test_ambiguous_repository_requests_clarification():
     known = [{"owner": "a", "repo": "runner-ai"}, {"owner": "b", "repo": "runner-ai"}]
-    res = build("list_issues", "List issues in runner-ai.", meta={"github_active_repositories": known})
+    res = build("list_issues", "List issues in runner-ai.",
+                meta={"resource_state": {"github_active_repositories": known}})
     assert res.status == ArgumentStatus.AMBIGUOUS
     assert res.ambiguity_count == 2
 
@@ -227,9 +245,9 @@ def test_non_github_tool_passthrough_unchanged():
         description="d", input_schema={}, output_schema={}, risk_level=RiskLevel.LOW,
         side_effects=SideEffectType.READ, requires_approval=False,
     )
-    b = GithubArgumentBuilder(identity=IDENT).build
     default = {"query": "status?", "user_id": "u", "job_id": "j1"}
-    res = b(internal, rc("status?"), default)
+    # No provider resolver registered for an internal tool → untouched passthrough.
+    res = pipeline().build(internal, rc("status?"), default)
     assert res.status == ArgumentStatus.OK
     assert res.arguments == default  # left exactly as the caller built them
 
@@ -296,7 +314,7 @@ class _RecordingExecutor:
 def _direct(tool, *, identity=IDENT):
     return DirectRuntime(
         _Retriever(tool), _RecordingExecutor(),
-        argument_builder=GithubArgumentBuilder(identity=identity).build,
+        argument_builder=pipeline(identity).build,
     )
 
 
