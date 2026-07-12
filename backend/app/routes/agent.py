@@ -113,6 +113,7 @@ _document_inventory_fn = None
 _connector_eligibility = False
 _capability_executor = None
 _mcp_result_normalizers = None
+_capability_argument_builder = None
 
 
 def _get_orchestrator():
@@ -131,6 +132,7 @@ def _get_orchestrator():
             document_inventory_fn=_document_inventory_fn,
             connector_eligibility=_connector_eligibility,
             capability_executor=_capability_executor,
+            capability_argument_builder=_capability_argument_builder,
         )
     return _orchestrator
 
@@ -145,6 +147,7 @@ def configure_agent_runtime(
     document_inventory_fn=None,
     connector_eligibility: bool = False,
     capability_executor=None,
+    capability_argument_builder=None,
 ) -> None:
     """Composition-root hook: select the LLM provider mode (and optionally a
     pre-discovered MCP registry manager) before the shared orchestrator is first
@@ -157,7 +160,7 @@ def configure_agent_runtime(
     demo. It never activates unless explicitly passed true."""
     global _use_real_llm, _mcp_registry_manager, _demo_mode, _orchestrator, _coordinator
     global _scope_gate, _document_inventory_fn, _connector_eligibility, _capability_executor
-    global _mcp_result_normalizers
+    global _mcp_result_normalizers, _capability_argument_builder
     _use_real_llm = bool(use_real_llm)
     _mcp_registry_manager = mcp_registry_manager
     _mcp_result_normalizers = mcp_result_normalizers
@@ -166,6 +169,7 @@ def configure_agent_runtime(
     _document_inventory_fn = document_inventory_fn
     _connector_eligibility = bool(connector_eligibility)
     _capability_executor = capability_executor
+    _capability_argument_builder = capability_argument_builder
     _orchestrator = None  # rebuild with the selected providers/capabilities on next use
     _coordinator = None
 

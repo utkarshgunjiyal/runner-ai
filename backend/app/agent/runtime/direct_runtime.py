@@ -74,11 +74,18 @@ class DirectRuntime:
         *,
         top_k: int = 5,
         max_retries: int = 1,
+        argument_builder=None,
     ) -> None:
         self._retriever = retriever
         self._executor = executor
         self._top_k = top_k
         self._max_retries = max(0, max_retries)
+        # Optional argument-builder seam (Phase 46.2.6): a callable
+        # ``(tool, run_context, default_args) -> ArgumentBuildResult`` that
+        # translates the request into schema-valid, provider-correct arguments (and
+        # can signal a missing/ambiguous required resource → clarify, don't execute).
+        # ``None`` → the historical ``_build_args`` behavior, byte-identical.
+        self._argument_builder = argument_builder
 
     async def run(self, run_context: RunContext) -> RunContext:
         # 1-2. Read the Behavior Gate decision and require the DIRECT path.
@@ -127,7 +134,7 @@ class DirectRuntime:
             )
             return run_context
 
-        args = self._build_args(run_context)
+        default_args = self._build_args(run_context)
 
         # 4-5-6. Select the best capability and execute it once.
         primary = matches[0].tool
@@ -136,6 +143,40 @@ class DirectRuntime:
             run_context, primary, path=path.value, rank=0, score=matches[0].score
         )
         diagnostics.tool_binding_resolved(run_context, primary)
+
+        # Argument construction (Phase 46.2.6): translate the request into
+        # schema-valid, provider-correct arguments before execution. If a required
+        # resource is missing or ambiguous, clarify deterministically instead of
+        # executing a wrong/global/guessed call (no MCP call is made).
+        args = default_args
+        if self._argument_builder is not None:
+            build = self._argument_builder(primary, run_context, default_args)
+            diagnostics.tool_arguments_built(run_context, primary, build)
+            if not build.ok:
+                diagnostics.tool_arguments_rejected(run_context, primary, build)
+                recovery.append(
+                    {
+                        "strategy": RecoveryStrategy.ASK_USER.value,
+                        "capability": primary.id,
+                        "reason": build.reason,
+                        "missing": list(build.missing_fields),
+                    }
+                )
+                run_context.metadata["argument_resolution"] = {
+                    "status": build.status.value,
+                    "capability_id": primary.id,
+                    "missing_fields": list(build.missing_fields),
+                    "ambiguity_count": build.ambiguity_count,
+                    "reason": build.reason,
+                }
+                self._record(
+                    run_context, tool=primary, result=None,
+                    status=ExecutionStatus.NEEDS_USER, attempts=0, recovery=recovery,
+                )
+                return run_context
+            args = build.arguments
+            diagnostics.tool_arguments_validated(run_context, primary, build)
+
         if primary.kind == ToolKind.MCP:
             diagnostics.mcp_tool_invoked(
                 run_context, primary, args, timeout=primary.timeout_seconds, retry_attempt=1

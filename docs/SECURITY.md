@@ -148,6 +148,14 @@ per-user OAuth. Security properties and boundaries:
   visible to anyone who can use the deployment. Prefer a **low-privilege,
   read-only** token — `public_repo`, a test account, or public-repo-only access.
   **Never** grant write/admin scopes.
+- **Connector identity metadata (Phase 46.2.6).** To scope account requests ("my
+  repositories") the connector resolves the authenticated **login/owner** — a
+  **public GitHub handle**, not a secret — from a trusted source only: a
+  best-effort `get_me` MCP response, else the validated `GITHUB_MCP_OWNER`
+  deployment setting. It is never inferred from arbitrary conversation text, and
+  no token or private authentication field is read or exposed. Like the rest of
+  the connector this identity is **deployment-scoped, not per-user OAuth** — one
+  shared identity for the whole deployment.
 - **No host Docker socket (Phase 46.2.1).** The recommended transport is the
   official **remote Streamable HTTP** endpoint (`GITHUB_MCP_TRANSPORT=http`,
   default), reached over outbound HTTPS. Runner.ai therefore **never mounts

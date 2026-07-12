@@ -55,9 +55,33 @@ async def main() -> int:
 
         adapter = MCPAdapter(manager, result_normalizers={GITHUB_MCP_SERVER_ID: github_result_normalizer})
 
-        # READ ONLY: list repositories for the authenticated account.
+        # Argument parity (Phase 46.2.6): show the RUNTIME-built arguments for the
+        # account-scoped request next to the verifier's, and confirm they resolve to
+        # the same account scoping. Never prints the token or any header.
+        from app.agent.github import (
+            GithubArgumentBuilder,
+            resolve_github_identity,
+        )
+        from app.agent.runtime.context import RunContext
+
+        async def _get_me():
+            return await manager.client.call_tool(config, "get_me", {})
+
+        identity = await resolve_github_identity(
+            configured_owner=os.environ.get("GITHUB_MCP_OWNER"), get_me_fn=_get_me
+        )
         repo_spec = manager.tool_registry.get(f"mcp.{GITHUB_MCP_SERVER_ID}.search_repositories")
-        result = await adapter.execute(repo_spec, {"query": "user:@me"})
+        built = GithubArgumentBuilder(identity=identity).build(
+            repo_spec, RunContext.create("List all my GitHub repositories.", user_id="probe"),
+            {"query": "List all my GitHub repositories."},
+        )
+        print(f"\nIdentity source: {identity.source}  known={identity.known}")
+        print(f"Runtime-built args : {built.arguments}")
+        print("Verifier args      : {'query': 'user:@me'}")
+
+        # READ ONLY: list repositories for the authenticated account, using the
+        # runtime-built (account-scoped) arguments.
+        result = await adapter.execute(repo_spec, built.arguments if built.ok else {"query": "user:@me"})
         print("\n--- Repositories (read-only) ---")
         print(format_output(result.output) if result.success else "  (repository read failed safely)")
 

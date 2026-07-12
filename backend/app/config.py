@@ -82,6 +82,12 @@ class Settings(BaseSettings):
     github_mcp_image: str = "ghcr.io/github/github-mcp-server:v0.6.0"
     github_mcp_toolsets: str = "repos,issues,pull_requests"
     github_mcp_timeout_seconds: float = 45.0
+    # Optional deployment-scoped authenticated GitHub owner/login (Phase 46.2.6).
+    # Used to scope account requests ("my repositories", "my <repo>") when the
+    # remote identity cannot be resolved. Deployment-scoped, NOT per-user OAuth; a
+    # public handle, never a secret. Left unset → identity is resolved best-effort
+    # from the connector, else account-scoped requests clarify rather than guess.
+    github_mcp_owner: str | None = None
 
     @field_validator("github_mcp_transport")
     @classmethod

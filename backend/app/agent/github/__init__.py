@@ -18,8 +18,15 @@ OAuth, and no credential ever crosses into a ToolSpec, evidence, log, error, or 
 response.
 """
 
+from app.agent.github.arguments import GithubArgumentBuilder
 from app.agent.github.enrich import github_spec_transform
+from app.agent.github.identity import (
+    GithubIdentity,
+    resolve_github_identity,
+    validate_owner,
+)
 from app.agent.github.normalize import github_result_normalizer
+from app.agent.github.resources import GithubResources, resolve_resources
 from app.agent.github.server import (
     GITHUB_BLOCKED_WRITE_TOOLS,
     GITHUB_MCP_SERVER_ID,
@@ -42,4 +49,10 @@ __all__ = [
     "GithubConnectorState",
     "build_github_connector_record",
     "integration_status_view",
+    "GithubArgumentBuilder",
+    "GithubIdentity",
+    "resolve_github_identity",
+    "validate_owner",
+    "GithubResources",
+    "resolve_resources",
 ]

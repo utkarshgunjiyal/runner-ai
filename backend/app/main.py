@@ -120,6 +120,7 @@ async def lifespan(app: FastAPI):
     mcp_connection_manager = None
     mcp_registry_manager = None
     mcp_result_normalizers = None
+    capability_argument_builder = None
     # Phase 46.2: the GitHub read-only MCP connector reflects real health here. A
     # GitHub connection failure must NOT block startup — document/chat flows keep
     # working; GitHub simply reports its status truthfully.
@@ -178,6 +179,36 @@ async def lifespan(app: FastAPI):
     capability_executor = _build_capability_executor()
     configure_run_recorder(_build_run_recorder())
 
+    # GitHub argument construction (Phase 46.2.6). When the GitHub MCP connector is
+    # wired, resolve the trusted, deployment-scoped authenticated identity (best-
+    # effort ``get_me``, else the validated GITHUB_MCP_OWNER setting) and build the
+    # GitHub argument builder. It translates natural-language GitHub requests into
+    # schema-valid, account-scoped arguments; for every non-GitHub capability it is
+    # a passthrough, so the rest of the runtime is unaffected. Identity resolution
+    # never blocks startup and never exposes a token.
+    if mcp_registry_manager is not None:
+        from app.agent.github import (
+            GITHUB_MCP_SERVER_ID,
+            GithubArgumentBuilder,
+            resolve_github_identity,
+        )
+
+        get_me_fn = None
+        if github_state is not None and github_state.is_connected and not settings.github_mcp_owner:
+            gh_config = next(
+                (c for c in server_configs if c.server_id == GITHUB_MCP_SERVER_ID), None
+            )
+            gh_client = getattr(mcp_registry_manager, "client", None)
+            if gh_config is not None and gh_client is not None:
+                async def get_me_fn():  # noqa: E306 - best-effort live identity
+                    return await gh_client.call_tool(gh_config, "get_me", {})
+
+        github_identity = await resolve_github_identity(
+            configured_owner=settings.github_mcp_owner, get_me_fn=get_me_fn
+        )
+        capability_argument_builder = GithubArgumentBuilder(identity=github_identity).build
+        logger.info("app.github_identity_ready", extra={"identity": github_identity.public_view()})
+
     # Agent LLM providers (Phase 37). Composition root selects deterministic vs
     # real V1.5-backed providers; routes stay config-free. One shared orchestrator.
     configure_agent_runtime(
@@ -189,6 +220,7 @@ async def lifespan(app: FastAPI):
         document_inventory_fn=document_inventory_fn,
         connector_eligibility=True,
         capability_executor=capability_executor,
+        capability_argument_builder=capability_argument_builder,
     )
     logger.info(
         "app.agent_llm_ready",

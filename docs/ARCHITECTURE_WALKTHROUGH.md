@@ -194,6 +194,21 @@ credentials or bypassing MCP. *Trade-off:* deployment-scoped shared identity, no
 per-user OAuth (restrict access; see [SECURITY.md](./SECURITY.md) and
 [GITHUB_MCP.md](./GITHUB_MCP.md)).
 
+Tool **selection** and argument **resolution** are separate steps (Phase 46.2.6).
+After a GitHub tool is selected, a deterministic argument layer
+(`github/resources.py` + `github/arguments.py`) translates the natural-language
+request into schema-valid, provider-correct arguments *before* execution: an
+account listing becomes `{"query": "user:<login>"}` (or `user:@me`) rather than the
+raw sentence (which `search_repositories` would run as a global search); repo tools
+resolve `owner`/`repo`; reads resolve `issue_number`/`pull_number`. The authenticated
+owner is a trusted, deployment-scoped **public login** (best-effort `get_me` → the
+validated `GITHUB_MCP_OWNER` setting), never inferred from chat text. `DirectRuntime`
+carries an injected `argument_builder` seam (default off → byte-identical): a missing
+or ambiguous required resource **clarifies and makes no MCP call**, never guessing an
+owner, repository, or number. *Why:* correct tool, correct arguments — schema-valid
+and account-scoped. *Trade-off:* deterministic heuristics (no LLM) for GitHub
+argument shapes; unresolved requests clarify rather than guess.
+
 ### 12c. Runtime selection diagnostics (Phase 46.2.3)
 Safe, structured diagnostic events (`app/agent/runtime/diagnostics.py`) trace a
 request from the chosen execution path → ranked capability candidates → selected

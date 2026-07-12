@@ -180,6 +180,37 @@ def mcp_tool_invoked(run_context, tool, args, *, timeout=None, retry_attempt: in
          argument_keys=sorted(str(k) for k in (args or {}).keys()))
 
 
+def _argument_view(tool, result) -> dict:
+    """Safe view of an argument-build result: KEY NAMES + provenance only, never
+    argument values (Phase 46.2.6)."""
+    b = binding_view(tool)
+    summary = getattr(result, "resource_summary", {}) or {}
+    return {
+        "capability_id": b["capability_id"],
+        "mcp_tool_name": b["mcp_tool_name"],
+        "status": getattr(getattr(result, "status", None), "value", None),
+        "argument_keys": sorted(str(k) for k in (getattr(result, "arguments", {}) or {}).keys()),
+        "missing_fields": list(getattr(result, "missing_fields", []) or []),
+        "ambiguity_count": getattr(result, "ambiguity_count", 0),
+        "operation": summary.get("operation"),
+        "owner_source": summary.get("owner_source"),
+        "account_scoped": summary.get("account_scoped"),
+    }
+
+
+def tool_arguments_built(run_context, tool, result) -> None:
+    emit(run_context, "agent.tool_arguments_built", **_argument_view(tool, result))
+
+
+def tool_arguments_validated(run_context, tool, result) -> None:
+    emit(run_context, "agent.tool_arguments_validated", **_argument_view(tool, result))
+
+
+def tool_arguments_rejected(run_context, tool, result) -> None:
+    emit(run_context, "agent.tool_arguments_rejected",
+         reason=getattr(result, "reason", None), **_argument_view(tool, result))
+
+
 def mcp_tool_completed(run_context, tool, result, *, attempts: int) -> None:
     b = binding_view(tool)
     success = bool(getattr(result, "success", False))

@@ -53,6 +53,7 @@ Configured at the **deployment/server level only** via environment variables:
 | `GITHUB_MCP_IMAGE` | Pinned server image tag (**stdio mode only**). |
 | `GITHUB_MCP_TOOLSETS` | `repos,issues,pull_requests` (stdio mode). |
 | `GITHUB_MCP_TIMEOUT_SECONDS` | Per-call timeout (default 45). |
+| `GITHUB_MCP_OWNER` | *(optional)* deployment-scoped authenticated login used to scope account requests when the remote identity can't be resolved. A **public handle**, not a secret. |
 
 Configuration **fails safe**: an unsupported `GITHUB_MCP_TRANSPORT`, or `http` mode
 with an empty `GITHUB_MCP_URL`, disables the connector (status "Not configured")
@@ -133,6 +134,51 @@ A GitHub failure never blocks startup; document and chat flows keep working.
   **Repository / Issue / PullRequest** structures with **bounded body excerpts** and
   whitelisted fields only — then a grounded, human-readable evidence block. The
   final answer is built **only** from this normalized data (never a raw payload).
+
+## Resource resolution & argument construction (Phase 46.2.6)
+
+**Tool *selection* and argument *resolution* are separate concerns.** Retrieval
+picks the right tool (`search_repositories`); a deterministic argument layer then
+turns the natural-language request into **semantically correct, schema-valid**
+arguments *before* execution. Without it, "List all my GitHub repositories."
+would be sent as `{"query": "List all my GitHub repositories."}` — which
+`search_repositories` runs as an **unrestricted global search** instead of an
+account listing.
+
+- **Trusted connector identity.** Account-scoped requests ("my repositories",
+  "my runner-ai") need the authenticated owner/login. It is resolved from a
+  **trusted** source only — best-effort `get_me` from the MCP server, else the
+  validated deployment setting **`GITHUB_MCP_OWNER`** — never inferred from
+  conversation text. It is a **public handle**, never a token; it stays
+  **deployment-scoped** (see [SECURITY.md](./SECURITY.md)), not per-user OAuth.
+- **Provider-specific resolution.** `github/resources.py` deterministically parses
+  explicit `owner/repo`, a bare repository name (owner resolved from the trusted
+  identity or unambiguous prior context), the pronoun "my", and issue/PR numbers
+  (positive integers only). Explicit `owner/repo` always beats inferred context;
+  an owner or repository is **never guessed**.
+- **Deterministic-first argument building.** `github/arguments.py`
+  (`GithubArgumentBuilder`) maps the operation off the discovered tool name and
+  fills only fields the discovered `input_schema` declares (tolerating
+  snake/camel aliases):
+  - account listing → `{"query": "user:<login>"}` (or `user:@me` when the login
+    is unknown — the same scoping the live verifier uses);
+  - repo tools → `{"owner": ..., "repo": ...}` (+ `state`);
+  - reads → `... "issue_number"/"pull_number"` (+ `method: "get"`);
+  - issue search → `author:@me`/`author:<login>` scoping.
+  No LLM is used for these; an LLM never invents an owner, repo, or number.
+- **Schema validation & safe failure.** Built arguments are projected onto the
+  discovered schema, required resources are checked, and the runtime
+  distinguishes: schema-valid, **missing required resource**, **ambiguous
+  resource**, connector unavailable, and remote tool failure. On missing/ambiguous
+  ("Show issue 12." with no repository context, or a name matching several
+  owners), the runtime **clarifies and makes no MCP call** — it never searches
+  every repository or guesses.
+- **Internal fields stay internal.** `user_id`/`thread_id`/`run_id`/`request_id`
+  are never built into a tool call (composing with the Phase 46.2.4 adapter
+  projection).
+- **Diagnostics.** `agent.tool_arguments_built` / `_validated` / `_rejected`
+  record argument **key names** and resolution provenance only — never argument
+  values, tokens, or headers.
 
 ## Status API + frontend
 

@@ -146,6 +146,7 @@ def build_default_runtime(
     capability_sources: list[CapabilitySource] | None = None,
     capability_registry: UnifiedCapabilityRegistry | None = None,
     mcp_result_normalizers=None,
+    capability_argument_builder=None,
 ) -> AgentOrchestrator:
     """Construct and wire the default runtime, returning an AgentOrchestrator.
 
@@ -203,7 +204,9 @@ def build_default_runtime(
 
         retriever = IntentCapabilityRetriever(retriever)
 
-    direct_runtime = DirectRuntime(retriever, executor, top_k=top_k)
+    direct_runtime = DirectRuntime(
+        retriever, executor, top_k=top_k, argument_builder=capability_argument_builder
+    )
     planner_runtime = PlannerRuntime(direct_runtime, retriever, top_k=top_k)
 
     # Providers: deterministic by default (config-free, credential-free); the
